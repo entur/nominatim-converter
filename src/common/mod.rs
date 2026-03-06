@@ -1,4 +1,5 @@
 pub mod category;
+pub mod input;
 pub mod coordinate;
 pub mod country;
 pub mod extra;

@@ -4,6 +4,7 @@ mod source;
 mod target;
 
 use clap::{Parser, Subcommand};
+use common::input::{cleanup_input, resolve_input};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -30,7 +31,7 @@ enum Action {
 
 #[derive(Parser)]
 struct ConvertArgs {
-    /// Input file
+    /// Input file or URL (http/https). ZIP archives are extracted automatically.
     #[arg(short = 'i')]
     input: PathBuf,
     /// Output file
@@ -49,13 +50,13 @@ struct ConvertArgs {
 
 #[derive(Parser)]
 struct MatrikkelArgs {
-    /// Input CSV file
+    /// Input CSV file or URL
     #[arg(short = 'i')]
     input: PathBuf,
     /// Output file
     #[arg(short = 'o')]
     output: PathBuf,
-    /// Stedsnavn GML file for county data
+    /// Stedsnavn GML file or URL for county data
     #[arg(short = 'g')]
     stedsnavn_gml: Option<PathBuf>,
     /// Skip county population
@@ -83,7 +84,7 @@ fn main() {
     let cli = Cli::parse();
 
     let result = match cli.action {
-        Action::Stopplace(args) => run_conversion("StopPlace", &args, |cfg, input, output, append| {
+        Action::Stopplace(args) => run_conversion("StopPlace", args, Some("*.xml"), |cfg, input, output, append| {
             source::stopplace::convert(cfg, input, output, append)
         }),
         Action::Matrikkel(args) => {
@@ -91,6 +92,8 @@ fn main() {
                 eprintln!("Error: matrikkel requires -g <stedsnavn.gml> for county data, or --no-county to skip it.");
                 std::process::exit(1);
             }
+
+            let gml_raw = args.stedsnavn_gml.clone();
             let convert_args = ConvertArgs {
                 input: args.input,
                 output: args.output,
@@ -98,18 +101,36 @@ fn main() {
                 append: args.append,
                 force: args.force,
             };
-            let gml = args.stedsnavn_gml;
-            run_conversion("Matrikkel", &convert_args, |cfg, input, output, append| {
-                source::matrikkel::convert(cfg, input, output, append, gml.as_deref())
-            })
+
+            // Resolve the -g input separately
+            let gml_resolved = gml_raw.map(|g| resolve_input(&g, Some("*.gml")));
+            let gml_result = match gml_resolved {
+                Some(Ok((path, is_temp))) => Some((path, is_temp)),
+                Some(Err(e)) => {
+                    eprintln!("Error resolving GML input: {e}");
+                    std::process::exit(1);
+                }
+                None => None,
+            };
+
+            let gml_path = gml_result.as_ref().map(|(p, _)| p.as_path());
+            let result = run_conversion("Matrikkel", convert_args, Some("*.csv"), |cfg, input, output, append| {
+                source::matrikkel::convert(cfg, input, output, append, gml_path)
+            });
+
+            if let Some((path, is_temp)) = gml_result {
+                cleanup_input(&path, is_temp);
+            }
+
+            result
         }
-        Action::Osm(args) => run_conversion("OSM PBF", &args, |cfg, input, output, append| {
+        Action::Osm(args) => run_conversion("OSM PBF", args, None, |cfg, input, output, append| {
             source::osm::convert(cfg, input, output, append)
         }),
-        Action::Stedsnavn(args) => run_conversion("Stedsnavn", &args, |cfg, input, output, append| {
+        Action::Stedsnavn(args) => run_conversion("Stedsnavn", args, Some("*.gml"), |cfg, input, output, append| {
             source::stedsnavn::convert(cfg, input, output, append)
         }),
-        Action::Poi(args) => run_conversion("POI", &args, |cfg, input, output, append| {
+        Action::Poi(args) => run_conversion("POI", args, None, |cfg, input, output, append| {
             source::poi::convert(cfg, input, output, append)
         }),
     };
@@ -122,7 +143,8 @@ fn main() {
 
 fn run_conversion<F>(
     name: &str,
-    args: &ConvertArgs,
+    args: ConvertArgs,
+    extract_glob: Option<&str>,
     convert_fn: F,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
@@ -146,9 +168,16 @@ where
         }
     }
 
+    let (input, is_temp) = resolve_input(&args.input, extract_glob)?;
+
     println!("Starting {name} conversion...");
     let start = Instant::now();
-    convert_fn(&cfg, &args.input, output, args.append)?;
+    let result = convert_fn(&cfg, &input, output, args.append);
+
+    cleanup_input(&input, is_temp);
+
+    result?;
+
     let duration = start.elapsed().as_secs_f64();
     let size_mb = std::fs::metadata(output).map(|m| m.len() as f64 / (1024.0 * 1024.0)).unwrap_or(0.0);
     let action = if args.append { "Appended to" } else { "Output written to" };
