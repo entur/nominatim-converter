@@ -1,6 +1,6 @@
 # nominatim-converter
 
-A Rust CLI tool that converts Norwegian geographic data sources into Nominatim-compatible NDJSON. This is a port of the Kotlin converter from [entur/geocoder](https://github.com/entur/geocoder), producing identical output.
+A Rust CLI tool that converts Norwegian geographic data sources into Nominatim-compatible NDJSON. This is a port of the [Kotlin converter](https://github.com/entur/geocoder/tree/last-with-kotlin-converter/converter), producing identical output.
 
 ## Data sources
 
@@ -132,14 +132,14 @@ All diffs are last-digit coordinate rounding from different UTM33→WGS84 projec
 
 ## Performance
 
-Benchmarks on Apple Silicon (M-series), release build with LTO. Compared to the Kotlin converter (JVM 21):
+Benchmarks on Apple Silicon (M-series), release build with LTO. Compared to the [Kotlin converter](https://github.com/entur/geocoder/tree/last-with-kotlin-converter/converter) (JVM 21):
 
 | Source | Entries | Rust | Kotlin | Speedup |
 |--------|---------|------|--------|---------|
-| StopPlace (403MB XML) | 58,085 | 1.2s | 6.5s | **5.4x** |
-| Stedsnavn (2.4GB GML) | 2,215 | 4.4s | 8.4s | **1.9x** |
-| OSM (1.3GB PBF) | 37,001 | 82s | 137s | **1.7x** |
-| Matrikkel (775MB CSV + 2.4GB GML) | 2,659,069 | 16s | 25s | **1.5x** |
+| StopPlace (403MB XML) | 58,062 | 1.1s | 6.5s | **5.9x** |
+| Stedsnavn (2.4GB GML) | 2,216 | 4.4s | 8.4s | **1.9x** |
+| OSM (1.3GB PBF) | 37,001 | 79s | 137s | **1.7x** |
+| Matrikkel (775MB CSV + 2.4GB GML) | 2,659,069 | 14s | 25s | **1.8x** |
 
 ## Comparison tool
 
