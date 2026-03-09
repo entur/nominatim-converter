@@ -102,7 +102,7 @@ src/
 
 ## Embedded data
 
-- `data/boundaries60x30.ser` — Country boundary raster data from [westnordost/countryboundaries](https://github.com/westnordost/countryboundaries), embedded in the binary via `include_bytes!`. Uses the same file as the Kotlin converter for identical country detection results.
+- `data/boundaries60x30.ser` — Country boundary raster data, embedded in the binary via `include_bytes!`. Originally from [JOSM's boundaries.osm](https://josm.openstreetmap.de/browser/josm/trunk/resources/data/boundaries.osm), manually edited to improve border accuracy, and stored in [entur/geocoder-data](https://github.com/entur/geocoder-data). Converted to `.ser` format using the [countryboundaries](https://github.com/westnordost/countryboundaries) generator. Uses the same file as the Kotlin converter for identical country detection results.
 
 ## Compatibility with the Kotlin converter
 
