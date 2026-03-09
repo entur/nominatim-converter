@@ -29,14 +29,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ matrix.target }}-cargo-${{ hashFiles('Cargo.lock') }}
-          restore-keys: ${{ matrix.target }}-cargo-
+        uses: Swatinem/rust-cache@v2
 
       - name: Build
         run: cargo build --release
