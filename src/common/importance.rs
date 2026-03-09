@@ -7,7 +7,7 @@ pub struct ImportanceCalculator {
 
 impl ImportanceCalculator {
     pub fn new(config: &ImportanceConfig) -> Self {
-        Self { config: config.clone() }
+        Self { config: *config }
     }
 
     /// Normalize popularity to Photon importance (0-1 range) using log10 normalization.

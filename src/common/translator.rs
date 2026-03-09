@@ -94,32 +94,22 @@ pub fn translate(norwegian: &str) -> String {
     if norwegian.trim().is_empty() {
         return norwegian.to_string();
     }
-    // Split on whitespace and punctuation boundaries, preserving delimiters
     let mut result = String::with_capacity(norwegian.len());
     let mut word_start = 0;
-    let chars: Vec<char> = norwegian.chars().collect();
-    let mut i = 0;
 
-    while i < chars.len() {
-        if chars[i].is_whitespace() || chars[i] == ',' || chars[i] == '.' {
+    for (i, c) in norwegian.char_indices() {
+        if c.is_whitespace() || c == ',' || c == '.' {
             if i > word_start {
-                result.push_str(&translate_word(&norwegian[byte_offset(&chars, word_start)..byte_offset(&chars, i)]));
+                result.push_str(&translate_word(&norwegian[word_start..i]));
             }
-            result.push(chars[i]);
-            i += 1;
-            word_start = i;
-        } else {
-            i += 1;
+            result.push(c);
+            word_start = i + c.len_utf8();
         }
     }
-    if i > word_start {
-        result.push_str(&translate_word(&norwegian[byte_offset(&chars, word_start)..]));
+    if word_start < norwegian.len() {
+        result.push_str(&translate_word(&norwegian[word_start..]));
     }
     result
-}
-
-fn byte_offset(chars: &[char], char_index: usize) -> usize {
-    chars[..char_index].iter().map(|c| c.len_utf8()).sum()
 }
 
 #[cfg(test)]

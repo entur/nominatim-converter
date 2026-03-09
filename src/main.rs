@@ -50,27 +50,14 @@ struct ConvertArgs {
 
 #[derive(Parser)]
 struct MatrikkelArgs {
-    /// Input CSV file or URL
-    #[arg(short = 'i')]
-    input: PathBuf,
-    /// Output file
-    #[arg(short = 'o')]
-    output: PathBuf,
+    #[command(flatten)]
+    common: ConvertArgs,
     /// Stedsnavn GML file or URL for county data
     #[arg(short = 'g')]
     stedsnavn_gml: Option<PathBuf>,
     /// Skip county population
     #[arg(long = "no-county", default_value_t = false)]
     no_county: bool,
-    /// Configuration file
-    #[arg(short = 'c')]
-    config: Option<PathBuf>,
-    /// Append to existing output file
-    #[arg(short = 'a', default_value_t = false)]
-    append: bool,
-    /// Force overwrite if output file exists
-    #[arg(short = 'f', default_value_t = false)]
-    force: bool,
 }
 
 fn main() {
@@ -93,17 +80,8 @@ fn main() {
                 std::process::exit(1);
             }
 
-            let gml_raw = args.stedsnavn_gml.clone();
-            let convert_args = ConvertArgs {
-                input: args.input,
-                output: args.output,
-                config: args.config,
-                append: args.append,
-                force: args.force,
-            };
-
             // Resolve the -g input separately
-            let gml_resolved = gml_raw.map(|g| resolve_input(&g, Some("*.gml")));
+            let gml_resolved = args.stedsnavn_gml.as_ref().map(|g| resolve_input(g, Some("*.gml")));
             let gml_result = match gml_resolved {
                 Some(Ok((path, is_temp))) => Some((path, is_temp)),
                 Some(Err(e)) => {
@@ -114,7 +92,7 @@ fn main() {
             };
 
             let gml_path = gml_result.as_ref().map(|(p, _)| p.as_path());
-            let result = run_conversion("Matrikkel", convert_args, Some("*.csv"), |cfg, input, output, append| {
+            let result = run_conversion("Matrikkel", args.common, Some("*.csv"), |cfg, input, output, append| {
                 source::matrikkel::convert(cfg, input, output, append, gml_path)
             });
 
@@ -161,16 +139,16 @@ where
             ).into());
         }
         if args.force {
-            println!("Overwriting existing file: {}", output.display());
+            eprintln!("Overwriting existing file: {}", output.display());
             std::fs::remove_file(output)?;
         } else if args.append {
-            println!("Appending to existing file: {}", output.display());
+            eprintln!("Appending to existing file: {}", output.display());
         }
     }
 
     let (input, is_temp) = resolve_input(&args.input, extract_glob)?;
 
-    println!("Starting {name} conversion...");
+    eprintln!("Starting {name} conversion...");
     let start = Instant::now();
     let result = convert_fn(&cfg, &input, output, args.append);
 
@@ -181,6 +159,6 @@ where
     let duration = start.elapsed().as_secs_f64();
     let size_mb = std::fs::metadata(output).map(|m| m.len() as f64 / (1024.0 * 1024.0)).unwrap_or(0.0);
     let action = if args.append { "Appended to" } else { "Output written to" };
-    println!("{name} conversion completed in {duration:.2} seconds. {action} {}, size: {size_mb:.2} MB.", output.display());
+    eprintln!("{name} conversion completed in {duration:.2} seconds. {action} {}, size: {size_mb:.2} MB.", output.display());
     Ok(())
 }

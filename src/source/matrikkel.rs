@@ -92,11 +92,9 @@ fn parse_csv(input: &Path) -> Result<Vec<MatrikkelAdresse>, Box<dyn std::error::
     let file = std::fs::File::open(input)?;
     let reader = BufReader::new(file);
     let mut addresses = Vec::new();
-    let mut first = true;
 
-    for line in reader.lines() {
+    for line in reader.lines().skip(1) {
         let line = line?;
-        if first { first = false; continue; } // skip header
         let tokens: Vec<&str> = line.split(';').collect();
         if tokens.len() < 46 || tokens[3] != "vegadresse" { continue; }
 

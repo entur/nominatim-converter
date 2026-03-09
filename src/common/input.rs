@@ -38,9 +38,9 @@ pub fn resolve_input(
     } else {
         let ext = Path::new(url)
             .extension()
-            .map(|e| e.to_string_lossy().to_string())
+            .and_then(|e| e.to_str())
             .unwrap_or_default();
-        let path = make_temp_path(&ext);
+        let path = make_temp_path(ext);
         download_to_file(response.into_body().into_reader(), &path, content_length)?;
         Ok((path, true))
     }

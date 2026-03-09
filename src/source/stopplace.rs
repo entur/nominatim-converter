@@ -286,15 +286,7 @@ fn parse_netex(xml: &str) -> Result<ParseResult, Box<dyn std::error::Error>> {
     Ok(ParseResult { stop_places, groups, topo_places, fare_zones })
 }
 
-pub fn read_element_as_string_pub(
-    reader: &mut Reader<&[u8]>,
-    tag_name: &str,
-    start: &quick_xml::events::BytesStart,
-) -> Result<String, Box<dyn std::error::Error>> {
-    read_element_as_string(reader, tag_name, start)
-}
-
-fn read_element_as_string(
+pub fn read_element_as_string(
     reader: &mut Reader<&[u8]>,
     tag_name: &str,
     start: &quick_xml::events::BytesStart,

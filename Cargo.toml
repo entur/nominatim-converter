@@ -9,7 +9,7 @@ serde_json = { version = "1", features = ["raw_value"] }
 quick-xml = { version = "0.37", features = ["serialize"] }
 osmpbf = "0.3"
 clap = { version = "4", features = ["derive"] }
-chrono = "0.4"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 proj = { version = "0.28", features = ["bundled_proj"] }
 country-boundaries = "1"
 ureq = "3"
@@ -17,3 +17,4 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [profile.release]
 lto = true
+strip = true

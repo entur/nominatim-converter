@@ -1,19 +1,19 @@
 /// Title-case a string: capitalize first letter of each word.
 pub fn titleize(s: &str) -> String {
-    s.split_whitespace()
-        .map(|word| {
-            let mut chars = word.chars();
-            match chars.next() {
-                None => String::new(),
-                Some(c) => {
-                    let upper: String = c.to_uppercase().collect();
-                    let lower: String = chars.map(|c| c.to_lowercase().next().unwrap_or(c)).collect();
-                    format!("{upper}{lower}")
-                }
+    let mut result = String::with_capacity(s.len());
+    for (i, word) in s.split_whitespace().enumerate() {
+        if i > 0 {
+            result.push(' ');
+        }
+        let mut chars = word.chars();
+        if let Some(c) = chars.next() {
+            result.extend(c.to_uppercase());
+            for c in chars {
+                result.extend(c.to_lowercase());
             }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+        }
+    }
+    result
 }
 
 /// Round to 6 decimal places.

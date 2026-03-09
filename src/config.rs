@@ -23,7 +23,7 @@ pub struct OsmConfig {
     pub filters: Vec<PoiFilter>,
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, Copy)]
 pub struct RankAddress {
     pub boundary: i32,
     pub place: i32,
@@ -84,7 +84,7 @@ pub struct GroupOfStopPlacesConfig {
     pub rank_address: i32,
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, Copy)]
 pub struct ImportanceConfig {
     #[serde(rename = "minPopularity")]
     pub min_popularity: f64,
@@ -167,7 +167,7 @@ impl Config {
             .map_err(|e| format!("Cannot read config file '{}': {e}", path.display()))?;
         let config: Config = serde_json::from_str(&content)
             .map_err(|e| format!("Invalid config '{}': {e}", path.display()))?;
-        println!("Loaded configuration from: {}", path.display());
+        eprintln!("Loaded configuration from: {}", path.display());
         Ok(config)
     }
 }

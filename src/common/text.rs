@@ -1,12 +1,16 @@
 pub const OSM_TAG_SEPARATOR: &str = ";";
 
 pub fn join_osm_values(values: &[String]) -> Option<String> {
-    let filtered: Vec<&str> = values.iter().map(|s| s.as_str()).filter(|s| !s.is_empty()).collect();
-    if filtered.is_empty() {
-        None
-    } else {
-        Some(filtered.join(OSM_TAG_SEPARATOR))
+    let mut iter = values.iter().filter(|s| !s.is_empty()).peekable();
+    iter.peek()?;
+    let mut result = String::new();
+    for (i, s) in iter.enumerate() {
+        if i > 0 {
+            result.push_str(OSM_TAG_SEPARATOR);
+        }
+        result.push_str(s);
     }
+    Some(result)
 }
 
 #[cfg(test)]

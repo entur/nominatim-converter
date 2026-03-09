@@ -285,7 +285,6 @@ impl AdministrativeBoundaryIndex {
             round_cache_coord(coord.lon),
         );
 
-        // Check cache – we store indices rather than references to satisfy the borrow checker.
         if !self.lookup_cache.contains_key(&key) {
             let county_idx = Self::find_best_match_idx(&self.counties, coord);
             let muni_idx = Self::find_best_match_idx(&self.municipalities, coord);

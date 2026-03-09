@@ -18,7 +18,9 @@ impl JsonWriter {
 
         let needs_header = !is_appending || !output.exists() || std::fs::metadata(output).map(|m| m.len() == 0).unwrap_or(true);
 
-        if needs_header {
+        let file = if needs_header {
+            let f = File::create(output)?;
+            let mut writer = BufWriter::new(f);
             let header = NominatimHeader {
                 type_: "NominatimDumpFile".to_string(),
                 content: HeaderContent {
@@ -32,13 +34,13 @@ impl JsonWriter {
                     },
                 },
             };
-            let file = File::create(output)?;
-            let mut writer = BufWriter::new(file);
             serde_json::to_writer(&mut writer, &header)?;
             writeln!(writer)?;
-        }
+            writer.into_inner()?
+        } else {
+            OpenOptions::new().create(true).append(true).open(output)?
+        };
 
-        let file = OpenOptions::new().create(true).append(true).open(output)?;
         let mut writer = BufWriter::new(file);
         for entry in entries {
             serde_json::to_writer(&mut writer, entry)?;
