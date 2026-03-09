@@ -1,0 +1,98 @@
+{
+  "osm": {
+    "defaultValue": 1.0,
+    "rankAddress": {
+      "boundary": 10,
+      "place": 20,
+      "road": 26,
+      "building": 28,
+      "poi": 30
+    },
+    "filters": [
+      { "key": "amenity", "value": "hospital", "priority": 9 },
+      { "key": "amenity", "value": "school", "priority": 9 },
+      { "key": "amenity", "value": "university", "priority": 9 },
+      { "key": "shop", "value": "mall", "priority": 9 },
+      { "key": "amenity", "value": "college", "priority": 8 },
+      { "key": "amenity", "value": "place_of_worship", "priority": 8 },
+      { "key": "amenity", "value": "exhibition_centre", "priority": 8 },
+      { "key": "leisure", "value": "park", "priority": 8 },
+      { "key": "leisure", "value": "sports_centre", "priority": 8 },
+      { "key": "leisure", "value": "stadium", "priority": 8 },
+      { "key": "tourism", "value": "museum", "priority": 8 },
+      { "key": "landuse", "value": "winter_sports", "priority": 8 },
+      { "key": "amenity", "value": "library", "priority": 7 },
+      { "key": "amenity", "value": "kindergarten", "priority": 7 },
+      { "key": "amenity", "value": "nursing_home", "priority": 7 },
+      { "key": "amenity", "value": "food_court", "priority": 7 },
+      { "key": "leisure", "value": "ice_rink", "priority": 7 },
+      { "key": "tourism", "value": "hotel", "priority": 6 },
+      { "key": "amenity", "value": "cafe", "priority": 6 },
+      { "key": "amenity", "value": "restaurant", "priority": 6 },
+      { "key": "amenity", "value": "social_facility", "priority": 6 },
+      { "key": "natural", "value": "beach", "priority": 6 },
+      { "key": "tourism", "value": "motel", "priority": 5 },
+      { "key": "tourism", "value": "hostel", "priority": 5 },
+      { "key": "tourism", "value": "alpine_hut", "priority": 5 },
+      { "key": "tourism", "value": "camp_site", "priority": 5 },
+      { "key": "tourism", "value": "gallery", "priority": 5 },
+      { "key": "tourism", "value": "theme_park", "priority": 5 },
+      { "key": "amenity", "value": "community_centre", "priority": 5 },
+      { "key": "amenity", "value": "dentist", "priority": 5 },
+      { "key": "amenity", "value": "concert_hall", "priority": 5 },
+      { "key": "amenity", "value": "events_venue", "priority": 5 },
+      { "key": "amenity", "value": "conference_centre", "priority": 5 },
+      { "key": "landuse", "value": "cemetery", "priority": 5 },
+      { "key": "office", "value": "government", "priority": 5 },
+      { "key": "amenity", "value": "embassy", "priority": 4 },
+      { "key": "amenity", "value": "clinic", "priority": 4 },
+      { "key": "amenity", "value": "golf_course", "priority": 4 },
+      { "key": "tourism", "value": "guest_house", "priority": 4 },
+      { "key": "amenity", "value": "prison", "priority": 3 },
+      { "key": "shop", "value": "furniture", "priority": 3 },
+      { "key": "amenity", "value": "doctors", "priority": 2 },
+      { "key": "amenity", "value": "police", "priority": 2 },
+      { "key": "amenity", "value": "cinema", "priority": 1 },
+      { "key": "amenity", "value": "theatre", "priority": 1 },
+      { "key": "amenity", "value": "bank", "priority": 1 },
+      { "key": "amenity", "value": "courthouse", "priority": 1 },
+      { "key": "amenity", "value": "townhall", "priority": 1 },
+      { "key": "tourism", "value": "attraction", "priority": 1 }
+    ]
+  },
+  "stedsnavn": {
+    "defaultValue": 40.0,
+    "rankAddress": 16
+  },
+  "matrikkel": {
+    "addressPopularity": 20.0,
+    "streetPopularity": 20.0,
+    "rankAddress": 26
+  },
+  "poi": {
+    "importance": 0.5,
+    "rankAddress": 30
+  },
+  "stopPlace": {
+    "defaultValue": 50,
+    "rankAddress": 30,
+    "stopTypeFactors": {
+      "busStation": 2.0,
+      "metroStation": 2.0,
+      "railStation": 2.0
+    },
+    "interchangeFactors": {
+      "recommendedInterchange": 3.0,
+      "preferredInterchange": 10.0
+    }
+  },
+  "groupOfStopPlaces": {
+    "gosBoostFactor": 10.0,
+    "rankAddress": 30
+  },
+  "importance": {
+    "minPopularity": 1.0,
+    "maxPopularity": 1000000000.0,
+    "floor": 0.1
+  }
+}

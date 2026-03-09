@@ -24,7 +24,7 @@ The binary is at `target/release/nominatim-converter`.
 
 ## Usage
 
-All subcommands require a `converter.json` configuration file (see the Kotlin project for the schema).
+All subcommands require a `converter.json` configuration file (see [`converter.example.json`](converter.example.json) for the schema).
 
 ```bash
 # StopPlace
@@ -147,19 +147,19 @@ Benchmarks on Apple Silicon (M-series), release build with LTO. Compared to the 
 
 ```bash
 # Basic 2-file comparison
-python3 compare-ndjson.py kotlin.ndjson rust.ndjson
+./compare-ndjson.py kotlin.ndjson rust.ndjson
 
 # Inspect a specific entry
-python3 compare-ndjson.py kotlin.ndjson rust.ndjson --inspect 400123
+./compare-ndjson.py kotlin.ndjson rust.ndjson --inspect 400123
 
 # Compare ordering patterns
-python3 compare-ndjson.py kotlin.ndjson rust.ndjson --order
+./compare-ndjson.py kotlin.ndjson rust.ndjson --order
 
 # Value distribution for differing entries
-python3 compare-ndjson.py kotlin.ndjson rust.ndjson --histogram extra.source
+./compare-ndjson.py kotlin.ndjson rust.ndjson --histogram extra.source
 
 # Focus on specific fields
-python3 compare-ndjson.py kotlin.ndjson rust.ndjson --field categories --subfield extra
+./compare-ndjson.py kotlin.ndjson rust.ndjson --field categories --subfield extra
 ```
 
 ## License
