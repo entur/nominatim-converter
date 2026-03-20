@@ -162,6 +162,7 @@ fn main() {
                 norwegian_counties::list_regions();
                 return;
             }
+            preflight_check(args.config.as_ref(), args.output.as_ref(), args.force, args.append);
             let input_path = match (&args.input, &args.region) {
                 (Some(path), _) => path.clone(),
                 (None, Some(region)) => {
@@ -224,6 +225,7 @@ fn main() {
                 norwegian_counties::list_regions();
                 return;
             }
+            preflight_check(args.config.as_ref(), args.output.as_ref(), args.force, args.append);
             let input_path = match (&args.input, &args.region) {
                 (Some(path), _) => path.clone(),
                 (None, Some(region)) => {
@@ -254,7 +256,10 @@ fn main() {
                 list_swedish_municipalities();
                 return;
             }
+            preflight_check(args.config.as_ref(), args.output.as_ref(), args.force, args.append);
             if let Some(ref municipalities) = args.municipality {
+                preflight_check_credentials("LANTMATERIET_USER");
+                preflight_check_credentials("LANTMATERIET_PASS");
                 let codes = resolve_municipality_codes(municipalities);
                 run_belagenhet_download(&args, &codes)
             } else {
@@ -278,6 +283,44 @@ fn main() {
 
     if let Err(e) = result {
         eprintln!("Error: {e}");
+        std::process::exit(1);
+    }
+}
+
+/// Validate config, output file, and credentials before starting any downloads.
+fn preflight_check(config: Option<&PathBuf>, output: Option<&PathBuf>, force: bool, append: bool) {
+    let config_path = config.map(|p| p.as_path()).unwrap_or_else(|| std::path::Path::new("converter.json"));
+    if !config_path.exists() {
+        eprintln!("Error: Cannot read config file '{}': No such file or directory", config_path.display());
+        std::process::exit(1);
+    }
+    if let Some(output) = output
+        && output.exists() && !force && !append
+    {
+        eprintln!("Error: Output file '{}' already exists. Use -f to overwrite or -a to append.", output.display());
+        std::process::exit(1);
+    }
+    if let Some(output) = output
+        && append && output.exists()
+    {
+        let size = std::fs::metadata(output).map(|m| m.len()).unwrap_or(0);
+        if size > 0 {
+            let mut buf = [0u8; 32];
+            let n = std::fs::File::open(output)
+                .and_then(|mut f| std::io::Read::read(&mut f, &mut buf))
+                .unwrap_or(0);
+            let header = std::str::from_utf8(&buf[..n]).unwrap_or("");
+            if !header.contains("NominatimDumpFile") {
+                eprintln!("Error: Output file '{}' does not appear to be a Nominatim NDJSON file. Refusing to append.", output.display());
+                std::process::exit(1);
+            }
+        }
+    }
+}
+
+fn preflight_check_credentials(env_var: &str) {
+    if std::env::var(env_var).is_err() {
+        eprintln!("Error: {env_var} environment variable not set. Set it directly or in a .env file.");
         std::process::exit(1);
     }
 }
