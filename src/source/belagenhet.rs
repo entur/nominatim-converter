@@ -1,5 +1,6 @@
 mod convert;
 pub(crate) mod download;
+pub(crate) mod municipalities;
 mod parse;
 
 pub fn convert(

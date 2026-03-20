@@ -119,7 +119,7 @@ fn convert_address(
                 county: addr.lanskod.as_deref().map(|_| {
                     // Use kommunnamn as a locality stand-in; county (län) is not in the data
                     // by name, but kommunnamn provides useful context
-                    addr.kommunnamn.as_deref().map(|n| titleize(n)).unwrap_or_default()
+                    addr.kommunnamn.as_deref().map(titleize).unwrap_or_default()
                 }).filter(|s| !s.is_empty()),
             },
             postcode: addr.postnummer.clone(),
@@ -131,7 +131,7 @@ fn convert_address(
                 source: Some("lantmateriet-belagenhetsadress".to_string()),
                 accuracy: Some("point".to_string()),
                 country_a: Some(country.three_letter_code),
-                locality: addr.kommunnamn.as_deref().map(|n| titleize(n)),
+                locality: addr.kommunnamn.as_deref().map(titleize),
                 locality_gid: l_gid,
                 county_gid: c_gid,
                 borough: addr.kommundel_namn.clone(),
@@ -173,8 +173,7 @@ fn convert_street(
 
     let postort = addr.postort.as_deref().unwrap_or("");
 
-    let mut indexed_alt = Vec::new();
-    indexed_alt.push(id.clone());
+    let indexed_alt = vec![id.clone()];
 
     NominatimPlace {
         type_: "Place".to_string(),
@@ -195,7 +194,7 @@ fn convert_street(
             address: Address {
                 street: Some(street_name),
                 city: Some(titleize(postort)),
-                county: addr.kommunnamn.as_deref().map(|n| titleize(n)),
+                county: addr.kommunnamn.as_deref().map(titleize),
             },
             postcode: None,
             country_code: Some(country.name.clone()),
@@ -206,7 +205,7 @@ fn convert_street(
                 source: Some("lantmateriet-belagenhetsadress".to_string()),
                 accuracy: Some("point".to_string()),
                 country_a: Some(country.three_letter_code),
-                locality: addr.kommunnamn.as_deref().map(|n| titleize(n)),
+                locality: addr.kommunnamn.as_deref().map(titleize),
                 locality_gid: l_gid,
                 county_gid: c_gid,
                 borough: addr.kommundel_namn.clone(),

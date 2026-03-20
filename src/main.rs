@@ -67,8 +67,9 @@ struct BelagenhetArgs {
     /// Force overwrite if output file exists
     #[arg(short = 'f', default_value_t = false)]
     force: bool,
-    /// Swedish municipality code(s) to download from Lantmäteriet (e.g. 0180 for Stockholm).
-    /// Requires LANTMATERIET_USER and LANTMATERIET_PASS env vars (or .env file).
+    /// Municipality code(s) to download from Lantmäteriet. Use "all" for entire Sweden,
+    /// a 2-digit county code (e.g. 01) for all municipalities in a county,
+    /// or specific 4-digit codes (e.g. 0180). Requires LANTMATERIET_USER/PASS env vars.
     #[arg(short = 'm', long = "municipality", num_args = 1.., conflicts_with = "input")]
     municipality: Option<Vec<String>>,
 }
@@ -141,7 +142,8 @@ fn main() {
         }),
         Action::Belagenhet(args) => {
             if let Some(ref municipalities) = args.municipality {
-                run_belagenhet_download(&args, municipalities)
+                let codes = resolve_municipality_codes(municipalities);
+                run_belagenhet_download(&args, &codes)
             } else {
                 let input = args.input.as_ref().unwrap_or_else(|| {
                     eprintln!("Error: belagenhet requires either -i <file.gpkg> or -m <municipality_code>");
@@ -254,4 +256,34 @@ fn run_belagenhet_download(
         output.display()
     );
     Ok(())
+}
+
+/// Expand municipality arguments: "all" becomes all 290 codes, county prefixes (2-digit)
+/// expand to all municipalities in that county, otherwise codes are passed through as-is.
+fn resolve_municipality_codes(args: &[String]) -> Vec<String> {
+    use source::belagenhet::municipalities::MUNICIPALITIES;
+
+    let mut codes = Vec::new();
+    for arg in args {
+        let lower = arg.to_lowercase();
+        if lower == "all" || lower == "00" {
+            eprintln!("Expanding 'all' to all {} municipalities", MUNICIPALITIES.len());
+            return MUNICIPALITIES.iter().map(|(c, _)| c.to_string()).collect();
+        } else if arg.len() == 2 && arg.chars().all(|c| c.is_ascii_digit()) {
+            // County prefix: expand to all municipalities in that län
+            let matching: Vec<String> = MUNICIPALITIES.iter()
+                .filter(|(c, _)| c.starts_with(arg.as_str()))
+                .map(|(c, _)| c.to_string())
+                .collect();
+            if matching.is_empty() {
+                eprintln!("Warning: no municipalities found for county code {arg}");
+            } else {
+                eprintln!("Expanding county {arg} to {} municipalities", matching.len());
+                codes.extend(matching);
+            }
+        } else {
+            codes.push(arg.clone());
+        }
+    }
+    codes
 }
