@@ -63,11 +63,11 @@ pub fn convert_all(
 }
 
 fn county_gid(lanskod: Option<&str>) -> Option<String> {
-    lanskod.map(|code| format!("LM:TopographicPlace:{code}"))
+    lanskod.map(|code| format!("LAN:TopographicPlace:{code}"))
 }
 
 fn locality_gid(kommunkod: Option<&str>) -> Option<String> {
-    kommunkod.map(|code| format!("LM:TopographicPlace:{code}"))
+    kommunkod.map(|code| format!("LAN:TopographicPlace:{code}"))
 }
 
 fn convert_address(
@@ -82,7 +82,7 @@ fn convert_address(
     let housenumber = addr.housenumber();
 
     // Use Lantmäteriet's unique object identifier for a collision-free stable ID
-    let id = format!("LM:BelagenhetAdress:{}", addr.objektidentitet);
+    let id = format!("LAN:BelagenhetAdress:{}", addr.objektidentitet);
     let id_cat = as_category(&id);
 
     let c_gid = county_gid(addr.lanskod.as_deref());
@@ -155,7 +155,7 @@ fn convert_street(
     let street_name = addr.street_or_place_name().unwrap_or_default();
     let kommun = addr.kommunkod.as_deref().unwrap_or("");
 
-    let id = format!("LM:TopographicPlace:{kommun}-{street_name}");
+    let id = format!("LAN:TopographicPlace:{kommun}-{street_name}");
 
     let c_gid = county_gid(addr.lanskod.as_deref());
     let l_gid = locality_gid(addr.kommunkod.as_deref());
