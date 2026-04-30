@@ -33,16 +33,13 @@ The global `--usage <FILE>` CLI flag points at a semicolon-separated CSV (`id;na
 
 The CSV is shared across every subcommand. Each source converter looks up by its own ID format (`NSR:StopPlace:N`, `KVE:PostalAddress:N`, `OSM:PointOfInterest:N`, etc.) so a single file can carry signals for multiple sources.
 
-The canonical CSV is generated from PostHog by the `posthog-popular-stops` job in [`geocoder/.github/workflows/cache-data-sources.yml`](../geocoder/.github/workflows/cache-data-sources.yml) and uploaded to:
-
-- `gs://ent-geocoder-prd/data-sources/popular-stops-fra.csv` (boardings - use this for general search ranking)
-- `gs://ent-geocoder-prd/data-sources/popular-stops-til.csv` (alightings)
+The canonical CSV is generated from PostHog by the `posthog-popular-stops` job in [`geocoder/.github/workflows/cache-data-sources.yml`](../geocoder/.github/workflows/cache-data-sources.yml) and uploaded to `gs://ent-geocoder-prd/data-sources/popular-stops.csv`. The job merges both boardings (`fra`) and alightings (`til`) PostHog insights, summing usage per id.
 
 `--usage` only accepts local paths, not GCS URIs, so download first:
 
 ```bash
-gcloud storage cp gs://ent-geocoder-prd/data-sources/popular-stops-fra.csv .
-nominatim-converter --usage popular-stops-fra.csv stopplace -i stops.xml -o stops.ndjson -c converter.json
+gcloud storage cp gs://ent-geocoder-prd/data-sources/popular-stops.csv .
+nominatim-converter --usage popular-stops.csv stopplace -i stops.xml -o stops.ndjson -c converter.json
 ```
 
 When `--usage` is set, output **deliberately diverges** from the original Java converter for any boosted entity. Do not use `compare-ndjson.py` against the Java baseline as a regression check in that mode - importance values will differ. Without `--usage`, output remains bit-identical and the comparison still applies.
