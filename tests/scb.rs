@@ -37,6 +37,7 @@ fn read_municipalities_from_source() -> Vec<(String, String)> {
 /// variable's codes and texts.
 fn fetch_scb_region(url: &str) -> Vec<(String, String)> {
     let body = ureq::get(url)
+        .header("User-Agent", concat!("nominatim-converter/", env!("CARGO_PKG_VERSION")))
         .call()
         .unwrap()
         .into_body()

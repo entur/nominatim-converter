@@ -7,6 +7,10 @@ use std::path::{Path, PathBuf};
 /// reference the same string.
 pub const CACHE_DIR_ENV: &str = "NOMINATIM_CACHE_DIR";
 
+/// User-Agent sent on every outbound HTTP request. Some upstreams (Geonorge,
+/// Lantmäteriet, SCB) expect a self-identifying agent.
+pub const USER_AGENT: &str = concat!("nominatim-converter/", env!("CARGO_PKG_VERSION"));
+
 /// Controls the download cache. Plumbed explicitly through `resolve_input` and
 /// `fetch_and_resolve` -- there is no global state, no env-var back-channel.
 ///
@@ -223,7 +227,7 @@ where
 }
 
 fn default_fetch(url: &str) -> Result<DownloadStream, Box<dyn std::error::Error>> {
-    let response = ureq::get(url).call()?;
+    let response = ureq::get(url).header("User-Agent", USER_AGENT).call()?;
     let content_length = response
         .headers()
         .get("content-length")

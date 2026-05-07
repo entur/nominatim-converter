@@ -1,4 +1,4 @@
-use crate::common::input::{CacheOptions, DownloadStream, ResolvedInput, fetch_and_resolve};
+use crate::common::input::{CacheOptions, DownloadStream, ResolvedInput, USER_AGENT, fetch_and_resolve};
 
 const BASE_URL: &str = "https://dl1.lantmateriet.se/adress/belagenhetsadresser";
 
@@ -29,6 +29,7 @@ fn fetch_with_basic_auth(url: &str) -> Result<DownloadStream, Box<dyn std::error
     let encoded = base64_encode(format!("{user}:{pass}").as_bytes());
 
     let response = ureq::get(url)
+        .header("User-Agent", USER_AGENT)
         .header("Authorization", &format!("Basic {encoded}"))
         .call()
         .map_err(|e| {
