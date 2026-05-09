@@ -113,6 +113,17 @@ pub struct GroupOfStopPlacesConfig {
     /// ISO 3166-1 alpha-2 (lowercase) for the country whose GoSPs receive the importance boost.
     #[serde(rename = "homeCountry", default = "default_gosp_home_country")]
     pub home_country: String,
+    /// Explicit list of GoSP IDs to demote in autocomplete. Each listed GoSP gets its
+    /// importance capped to `SECONDARY_GOSP_IMPORTANCE` and its `rank_address` set to 0,
+    /// which forfeits the +0.4 weight Photon's `setupShortQuery` gives non-"other" docs.
+    /// Use this to silence redundant aggregators like NSR:GroupOfStopPlaces:7 "Bergen", which
+    /// coexists with the more useful NSR:GroupOfStopPlaces:174 "Bergen sentrum". Add new IDs
+    /// here when they're identified in production - automatic detection was tried (member
+    /// count, then name=locality match) and rejected, because the only known false-positive
+    /// class (a canonical city GoSP that happens to have a sibling) is hard to distinguish
+    /// from a real redundant aggregator.
+    #[serde(rename = "secondaryGosps", default)]
+    pub secondary_gosps: Vec<String>,
 }
 
 fn default_gosp_importance_multiplier() -> f64 { 1.0 }

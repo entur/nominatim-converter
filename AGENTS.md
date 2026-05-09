@@ -46,6 +46,8 @@ When `--usage` is set, output **deliberately diverges** from the original Java c
 
 GoSP popularity is the product of its member stops' (boosted) popularities, then run through `ImportanceCalculator::calculate_importance_unclamped` and scaled by `groupOfStopPlaces.importanceMultiplier`. The unclamped + multiplier path is what lifts cities above the 0-1 ceiling so they outrank near-focus streets sharing a name prefix.
 
+GoSP IDs listed in `groupOfStopPlaces.secondaryGosps` are demoted in autocomplete via two converter-side levers (no user-visible field is mutated): (1) importance is pinned to `SECONDARY_GOSP_IMPORTANCE` (0.001, hardcoded - must be strictly positive because Photon's `function_score` drops docs whose total collapses to zero), and (2) `rank_address` is set to 0, which maps the doc to Photon's `AddressType.OTHER` so it forfeits the +0.4 weight `SearchQueryBuilder.setupShortQuery` gives non-"other" docs. The list is explicit rather than heuristic-detected because the redundant-aggregator pattern (e.g. NSR:GroupOfStopPlaces:7 "Bergen" coexisting with GoSP:174 "Bergen sentrum") is hard to distinguish from canonical city aggregators that just happen to have a sibling. Today only GoSP:7 is configured.
+
 ### Coordinate conversions have inherent precision differences
 
 UTM33 (EPSG:25833) → WGS84 conversions use the `proj` crate, which produces results that differ from the original converter at the 6th decimal place (~0.1m). This is accepted as unavoidable — the difference is sub-meter.
@@ -121,7 +123,7 @@ This converter produces `nominatim.ndjson` which is imported into the **Photon g
 ### Acceptance test patterns worth knowing
 
 - **Geographic disambiguation**: Same place name in multiple locations (e.g. "Haugen") — focus points select the closest. Correct coordinates are critical.
-- **Data source priority**: NSR takes priority over WhosOnFirst for stop places. GroupOfStopPlaces rank above individual StopPlaces for major cities.
+- **Data source priority**: NSR takes priority over WhosOnFirst for stop places. GroupOfStopPlaces rank above individual StopPlaces for major cities, except for "secondary" GoSPs whose name matches the locality and have a sibling - those are capped below real stops (see `identify_secondary_gosps`).
 - **Popular vs official names**: "Gardermoen" (popular) should find "Oslo lufthavn" (official). Alt name deduplication and ordering matter.
 - **House number edge cases**: Numbers can appear before street name ("10 schw"), with suffixes ("10B"), or after ("strandkaien 22").
 - **Multi-modal categories**: Stavanger stasjon = railStation + onstreetBus. Oslo lufthavn = railStation + onstreetBus + busStation + airport. Category arrays must be complete.
@@ -131,7 +133,7 @@ This converter produces `nominatim.ndjson` which is imported into the **Photon g
 
 All source converters have unit tests (`cargo test --release` runs ~240 tests). Coverage by module:
 
-1. **stopplace** (38 tests): NeTEx parsing, popularity calculation (base × type factors × interchange), GroupOfStopPlaces popularity (product of member popularities), transport mode formatting (mode:submode, parent collecting children with dedup), alt name handling (label → visible, translation → indexed only), category generation (funicular included, bus excluded, multimodal.parent marker), tariff zone ordering, full conversion integration tests (coordinates, authority categories, county_gid/locality_gid)
+1. **stopplace** (36 tests): NeTEx parsing, popularity calculation (base × type factors × interchange), GroupOfStopPlaces popularity (product of member popularities), transport mode formatting (mode:submode, parent collecting children with dedup), alt name handling (label → visible, translation → indexed only), category generation (funicular included, bus excluded, multimodal.parent marker), tariff zone ordering, full conversion integration tests (coordinates, authority categories, county_gid/locality_gid, secondary-GoSP importance cap and rank_address)
 2. **stedsnavn** (22 tests): Target type recognition (by/bydel/tettsted/tettsteddel/tettbebyggelse), spelling status filtering (vedtatt/godkjent/privat/samlevedtak accepted), GML parsing with historisk alt spelling, diacritics preservation, field validation (source, accuracy, country_code, importance, rank_address), locality/county GID format, coordinate ranges, titleized names
 3. **matrikkel** (12 tests): CSV→NDJSON conversion, field validation (id, source, accuracy, country_a, locality, borough, housenumber with letter suffix), county population via stedsnavn GML, address + street entry generation, category correctness, coordinate validity, importance range, county GID in categories
 4. **poi** (7 tests): ValidBetween date filtering (valid/expired/future/always-valid/open-ended), coordinate and category correctness

@@ -11,8 +11,16 @@ use crate::config::Config;
 use crate::target::json_writer::JsonWriter;
 use crate::target::nominatim_id::as_place_id;
 use crate::target::nominatim_place::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
+
+/// Importance assigned to GoSPs listed in `secondaryGosps`. Must be strictly positive: Photon
+/// adds importance to the document score after wrapping the query in a `function_score` with
+/// `boostMode=Sum`. Empirically, a negative importance can drive the combined score below zero,
+/// at which point Lucene clamps it and the document disappears from results. 0.001 is small
+/// enough to be dwarfed by real stops' importance (~0.4-0.5) but stays comfortably positive.
+/// Tied to Photon's scoring behavior, not deployment-specific, so kept as a constant.
+const SECONDARY_GOSP_IMPORTANCE: f64 = 0.001;
 
 use super::popularity::calculate_stop_popularity;
 use super::xml::*;
@@ -77,11 +85,33 @@ pub fn convert_all(
         }
     }
 
+    let stop_by_id: HashMap<&str, &StopPlaceXml> =
+        result.stop_places.iter().map(|sp| (sp.id.as_str(), sp)).collect();
+
+    let secondary_gosps: HashSet<&str> = config.group_of_stop_places.secondary_gosps
+        .iter().map(String::as_str).collect();
+    if !secondary_gosps.is_empty() {
+        let gosp_ids: HashSet<&str> = result.groups.iter().map(|g| g.id.as_str()).collect();
+        let n = secondary_gosps.len();
+        eprintln!("Demoting {n} configured secondary GoSP{}:", if n == 1 { "" } else { "s" });
+        for gosp in &result.groups {
+            if secondary_gosps.contains(gosp.id.as_str()) {
+                eprintln!("  {} \"{}\"", gosp.id, gosp.name.as_deref().unwrap_or(""));
+            }
+        }
+        for id in &secondary_gosps {
+            if !gosp_ids.contains(id) {
+                eprintln!("  warning: configured secondary GoSP {id} not found in input - typo?");
+            }
+        }
+    }
+
     // Convert groups of stop places
     for gosp in &result.groups {
+        let is_secondary = secondary_gosps.contains(gosp.id.as_str());
         if let Some(entry) = convert_gosp(
             config, &importance_calc, gosp, &result.topo_places,
-            &stop_popularities, &result.stop_places,
+            &stop_popularities, &stop_by_id, is_secondary,
         ) {
             entries.push(entry);
         }
@@ -346,14 +376,15 @@ pub(crate) fn convert_gosp(
     gosp: &GroupOfStopPlacesXml,
     topo_places: &HashMap<String, TopographicPlaceXml>,
     stop_popularities: &HashMap<String, i64>,
-    stop_places: &[StopPlaceXml],
+    stop_by_id: &HashMap<&str, &StopPlaceXml>,
+    is_secondary: bool,
 ) -> Option<NominatimPlace> {
     let centroid_xml = gosp.centroid.as_ref()?;
     let coord = Coordinate::new(centroid_xml.location.latitude, centroid_xml.location.longitude);
     let group_name = gosp.name.as_deref()?;
 
-    let (locality, locality_gid, county, county_gid) =
-        resolve_gosp_geography(gosp, topo_places, stop_places);
+    let GospGeography { locality, locality_gid, county, county_gid } =
+        resolve_gosp_geography(gosp, topo_places, stop_by_id);
 
     let gos_pop = calculate_gosp_popularity(gosp, stop_popularities);
     let country = geo::get_country(&coord).unwrap_or_else(Country::no);
@@ -362,8 +393,11 @@ pub(crate) fn convert_gosp(
     // apply the configured multiplier so major Norwegian cities (Bergen, Trondheim) outrank
     // near-focus streets that share the same name prefix. Foreign GoSPs (e.g. NSR's Berlin ZOB
     // entry for international bus routes) keep the clamped 0-1 importance so they don't
-    // outrank Norwegian cities for users searching in Norway.
-    let raw_importance = if country.name == config.group_of_stop_places.home_country {
+    // outrank Norwegian cities for users searching in Norway. Secondary GoSPs (configured in
+    // `secondaryGosps`) get a hard floor so they sink below real stops in autocomplete.
+    let raw_importance = if is_secondary {
+        SECONDARY_GOSP_IMPORTANCE
+    } else if country.name == config.group_of_stop_places.home_country {
         importance_calc.calculate_importance_unclamped(gos_pop)
             * config.group_of_stop_places.importance_multiplier
     } else {
@@ -385,6 +419,13 @@ pub(crate) fn convert_gosp(
     if let Some(gid) = &locality_gid { indexed_cats.push(locality_ids_category(gid)); }
     indexed_cats.push(as_category(&gosp.id));
 
+    // Secondary GoSPs use rank_address 0 so Photon maps them to AddressType.OTHER instead of
+    // HOUSE. In the autocomplete short-query path (`SearchQueryBuilder.setupShortQuery`), every
+    // doc whose `OBJECT_TYPE != "other"` earns a +0.4 function-score weight; secondary GoSPs
+    // forfeit that boost. Combined with the importance cap, this is enough to push the bare
+    // "Bergen" GoSP below real Bergen stops without modifying any user-visible field.
+    let rank_address = if is_secondary { 0 } else { config.group_of_stop_places.rank_address };
+
     Some(NominatimPlace {
         type_: "Place".to_string(),
         content: vec![PlaceContent {
@@ -392,7 +433,7 @@ pub(crate) fn convert_gosp(
             object_type: "N".to_string(),
             object_id: 0,
             categories: indexed_cats,
-            rank_address: config.group_of_stop_places.rank_address,
+            rank_address,
             importance,
             parent_place_id: Some(0),
             name: Some(Name {
@@ -421,28 +462,37 @@ pub(crate) fn convert_gosp(
     })
 }
 
+struct GospGeography {
+    locality: Option<String>,
+    locality_gid: Option<String>,
+    county: Option<String>,
+    county_gid: Option<String>,
+}
+
 fn resolve_gosp_geography(
     gosp: &GroupOfStopPlacesXml,
     topo_places: &HashMap<String, TopographicPlaceXml>,
-    stop_places: &[StopPlaceXml],
-) -> (Option<String>, Option<String>, Option<String>, Option<String>) {
+    stop_by_id: &HashMap<&str, &StopPlaceXml>,
+) -> GospGeography {
     let group_name = gosp.name.as_deref().unwrap_or_default();
-    let mut locality = Some(group_name.to_string());
-    let mut locality_gid: Option<String> = None;
-    let mut county: Option<String> = None;
-    let mut county_gid: Option<String> = None;
+    let mut geo = GospGeography {
+        locality: Some(group_name.to_string()),
+        locality_gid: None,
+        county: None,
+        county_gid: None,
+    };
 
     if let Some(members) = &gosp.members {
         for sp_ref in &members.refs {
-            if let Some(sp) = stop_places.iter().find(|s| s.id == sp_ref.ref_)
+            if let Some(sp) = stop_by_id.get(sp_ref.ref_.as_str()).copied()
                 && let Some(topo_ref) = sp.topographic_place_ref.as_ref()
                 && let Some(tp) = topo_places.get(&topo_ref.ref_)
                 && tp.topographic_place_type.as_deref() == Some("municipality")
             {
-                locality_gid = Some(topo_ref.ref_.clone());
-                locality = tp.descriptor.as_ref().and_then(|d| d.name.clone());
-                county_gid = tp.parent_ref.as_ref().map(|r| r.ref_.clone());
-                county = county_gid.as_ref().and_then(|gid| {
+                geo.locality_gid = Some(topo_ref.ref_.clone());
+                geo.locality = tp.descriptor.as_ref().and_then(|d| d.name.clone());
+                geo.county_gid = tp.parent_ref.as_ref().map(|r| r.ref_.clone());
+                geo.county = geo.county_gid.as_ref().and_then(|gid| {
                     topo_places.get(gid).and_then(|tp2| tp2.descriptor.as_ref()?.name.clone())
                 });
                 break;
@@ -450,7 +500,7 @@ fn resolve_gosp_geography(
         }
     }
 
-    (locality, locality_gid, county, county_gid)
+    geo
 }
 
 /// GoSP popularity is the product of its members' popularities. Empty product is 1.0,
@@ -689,6 +739,44 @@ mod tests {
         assert!(content.contains("\"name\":\"Oslo\""));
         assert!(content.contains("osm.public_transport.group_of_stop_places"));
         let _ = std::fs::remove_file(&output);
+    }
+
+    #[test]
+    fn convert_caps_secondary_gosp_importance() {
+        // Configures GoSP:1 (Oslo) as secondary and asserts both demotion levers fire:
+        // importance capped, rank_address set to 0. GoSP:72 (Hammerfest) is the control - same
+        // fixture, no demotion config, must keep its full importance and configured rank_address.
+        let mut config = test_config();
+        config.group_of_stop_places.secondary_gosps =
+            vec!["NSR:GroupOfStopPlaces:1".to_string()];
+        let input = test_data_path("stopPlaces.xml");
+        let output = std::env::temp_dir().join("test_secondary_gosp_cap.ndjson");
+        convert_all(&config, &input, &output, false, &UsageBoost::empty()).unwrap();
+        let content = std::fs::read_to_string(&output).unwrap();
+        let _ = std::fs::remove_file(&output);
+
+        let line_for = |id: &str| content.lines()
+            .find(|l| l.contains(id) && l.contains("\"place_id\""))
+            .unwrap_or_else(|| panic!("{id} not in output")).to_string();
+        let importance_of = |line: &str| -> f64 {
+            let key = "\"importance\":";
+            let i = line.find(key).expect("importance field") + key.len();
+            let rest = &line[i..];
+            let end = rest.find(|c: char| c != '.' && c != '-' && !c.is_ascii_digit())
+                .unwrap_or(rest.len());
+            rest[..end].parse().unwrap()
+        };
+
+        let demoted = line_for("NSR:GroupOfStopPlaces:1");
+        let kept = line_for("NSR:GroupOfStopPlaces:72");
+        assert_eq!(importance_of(&demoted), SECONDARY_GOSP_IMPORTANCE,
+            "demoted GoSP must be pinned at the secondary-GoSP importance constant");
+        assert!(importance_of(&kept) > SECONDARY_GOSP_IMPORTANCE,
+            "non-demoted GoSP importance must exceed the secondary-GoSP floor");
+        assert!(demoted.contains("\"rank_address\":0"),
+            "demoted GoSP must have rank_address=0 (forfeits Photon's short-query +0.4 boost)");
+        assert!(!kept.contains("\"rank_address\":0"),
+            "non-demoted GoSP must keep its configured rank_address");
     }
 
     #[test]

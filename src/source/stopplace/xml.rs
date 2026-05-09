@@ -318,11 +318,10 @@ mod tests {
     fn parse_group_of_stop_places() {
         let xml = std::fs::read_to_string(test_data_path("stopPlaces.xml")).unwrap();
         let result = parse_netex(&xml).unwrap();
-        assert_eq!(result.groups.len(), 2);
-        assert_eq!(result.groups[0].id, "NSR:GroupOfStopPlaces:72");
-        assert_eq!(result.groups[0].name.as_deref(), Some("Hammerfest"));
-        assert_eq!(result.groups[1].id, "NSR:GroupOfStopPlaces:1");
-        assert_eq!(result.groups[1].name.as_deref(), Some("Oslo"));
+        let by_id: HashMap<&str, &GroupOfStopPlacesXml> =
+            result.groups.iter().map(|g| (g.id.as_str(), g)).collect();
+        assert_eq!(by_id.get("NSR:GroupOfStopPlaces:72").unwrap().name.as_deref(), Some("Hammerfest"));
+        assert_eq!(by_id.get("NSR:GroupOfStopPlaces:1").unwrap().name.as_deref(), Some("Oslo"));
     }
 
     #[test]
