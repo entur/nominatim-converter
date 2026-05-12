@@ -265,20 +265,32 @@ fn build_stop_categories(
     (visible_cats, indexed_cats)
 }
 
-/// Append tariff zone categories in 3 passes to match the original converter's ordering:
-/// 1. Zone IDs (e.g. `tariff_zone_id.RUT.TariffZone.1`)
-/// 2. Zone authorities extracted from the zone ref prefix (e.g. `tariff_zone_authority.RUT`)
-/// 3. Fare zone authorities from the FareZone → AuthorityRef lookup
+/// Append tariff/fare zone categories in 3 passes:
+/// 1. Zone IDs, split by ref shape:
+///    - `:TariffZone:` refs go to `tariff_zone_id.RUT.TariffZone.1`
+///    - `:FareZone:` refs go to `fare_zone_id.RUT.FareZone.4`
+/// 2. Zone authorities extracted from `:TariffZone:` ref prefixes (e.g. `tariff_zone_authority.RUT`)
+/// 3. Fare zone authorities from the FareZone → AuthorityRef lookup (e.g. `fare_zone_authority.RUT.Authority.RUT`)
 fn append_tariff_zone_categories(
     indexed_cats: &mut Vec<String>,
     sp: &StopPlaceXml,
     fare_zones: &HashMap<String, FareZoneXml>,
 ) {
     let Some(tz) = &sp.tariff_zones else { return };
-    // Pass 1: tariff zone IDs
+    // Pass 1: zone IDs - split by ref shape so callers can filter the two namespaces separately.
+    // NeTEx codespace types are a stable, finite vocabulary; `TariffZone` and `FareZone` are the
+    // two shapes that appear under <TariffZones>. Anything else falls through to tariff_zone_id.
+    //
+    // The `:FareZone:` substring branch MUST stay in sync with
+    // geocoder/proxy/src/main/kotlin/no/entur/geocoder/proxy/photon/PhotonFilterBuilder.kt
+    // (v2 tariffZones routing) - both decide TariffZone vs FareZone the same way.
     for tz_ref in &tz.refs {
         if let Some(ref_) = &tz_ref.ref_ {
-            indexed_cats.push(tariff_zone_id_category(ref_));
+            if ref_.contains(":FareZone:") {
+                indexed_cats.push(fare_zone_id_category(ref_));
+            } else {
+                indexed_cats.push(tariff_zone_id_category(ref_));
+            }
         }
     }
     // Pass 2: tariff zone authorities (deduplicated).
@@ -817,6 +829,25 @@ mod tests {
         let content = std::fs::read_to_string(&output).unwrap();
         assert!(content.contains("fare_zone_authority.FIN.Authority.FIN_ID"));
         assert!(content.contains("fare_zone_authority.RUT.Authority.RUT_ID"));
+        let _ = std::fs::remove_file(&output);
+    }
+
+    #[test]
+    fn tariff_and_fare_zone_ids_indexed_under_distinct_prefixes() {
+        let config = test_config();
+        let input = test_data_path("stopPlaces.xml");
+        let output = std::env::temp_dir().join("test_convert_zone_id_split.ndjson");
+        convert_all(&config, &input, &output, false, &UsageBoost::empty()).unwrap();
+        let content = std::fs::read_to_string(&output).unwrap();
+        // :TariffZone: refs land under tariff_zone_id.
+        assert!(content.contains("tariff_zone_id.RUT.TariffZone.1"));
+        assert!(content.contains("tariff_zone_id.FIN.TariffZone.54540"));
+        // :FareZone: refs land under fare_zone_id.
+        assert!(content.contains("fare_zone_id.RUT.FareZone.4"));
+        assert!(content.contains("fare_zone_id.FIN.FareZone.31"));
+        // FareZone refs should NOT also be indexed under tariff_zone_id.
+        assert!(!content.contains("tariff_zone_id.RUT.FareZone"));
+        assert!(!content.contains("tariff_zone_id.FIN.FareZone"));
         let _ = std::fs::remove_file(&output);
     }
 

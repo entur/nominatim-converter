@@ -37,7 +37,8 @@ pub const LAYER_PLACE: &str = "layer.place";
 pub const COUNTRY_PREFIX: &str = "country.";
 pub const TARIFF_ZONE_ID_PREFIX: &str = "tariff_zone_id.";
 pub const TARIFF_ZONE_AUTH_PREFIX: &str = "tariff_zone_authority.";
-pub const FARE_ZONE_PREFIX: &str = "fare_zone_authority.";
+pub const FARE_ZONE_ID_PREFIX: &str = "fare_zone_id.";
+pub const FARE_ZONE_AUTH_PREFIX: &str = "fare_zone_authority.";
 pub const COUNTY_ID_PREFIX: &str = "county_gid.";
 pub const LOCALITY_ID_PREFIX: &str = "locality_gid.";
 pub const LEGACY_CATEGORY_PREFIX: &str = "legacy.category.";
@@ -60,8 +61,12 @@ pub fn tariff_zone_id_category(ref_: &str) -> String {
     format!("{TARIFF_ZONE_ID_PREFIX}{}", as_category(ref_))
 }
 
+pub fn fare_zone_id_category(ref_: &str) -> String {
+    format!("{FARE_ZONE_ID_PREFIX}{}", as_category(ref_))
+}
+
 pub fn fare_zone_authority_category(ref_: &str) -> String {
-    format!("{FARE_ZONE_PREFIX}{}", as_category(ref_))
+    format!("{FARE_ZONE_AUTH_PREFIX}{}", as_category(ref_))
 }
 
 pub fn county_ids_category(ref_: &str) -> String {
@@ -91,6 +96,14 @@ mod tests {
         assert_eq!(
             tariff_zone_id_category("RUT:TariffZone:1"),
             "tariff_zone_id.RUT.TariffZone.1"
+        );
+    }
+
+    #[test]
+    fn test_fare_zone_id_category() {
+        assert_eq!(
+            fare_zone_id_category("RUT:FareZone:4"),
+            "fare_zone_id.RUT.FareZone.4"
         );
     }
 
