@@ -93,8 +93,11 @@ fn convert_address(
     let c_gid = county_gid(addr.lanskod.as_deref());
     let l_gid = locality_gid(addr.kommunkod.as_deref());
 
-    let tags = [OSM_ADDRESS, "legacy.source.openaddresses", "legacy.layer.address"];
-    let mut indexed_cats: Vec<String> = tags.iter().map(|s| s.to_string()).collect();
+    let visible_cats = vec![
+        LEGACY_SOURCE_OPENADDRESSES.to_string(),
+        LEGACY_LAYER_ADDRESS.to_string(),
+    ];
+    let mut indexed_cats = visible_cats.clone();
     indexed_cats.push(SOURCE_BELAGENHET.to_string());
     indexed_cats.push(LAYER_ADDRESS.to_string());
     indexed_cats.push(format!("{COUNTRY_PREFIX}{}", country.name));
@@ -143,7 +146,7 @@ fn convert_address(
                 county_gid: c_gid,
                 borough: addr.kommundel_namn.clone(),
                 alt_name: addr.popularnamn.clone(),
-                tags: join_osm_values(&tags.iter().map(|s| s.to_string()).collect::<Vec<_>>()),
+                tags: join_osm_values(&visible_cats),
                 ..Default::default()
             },
         }],
@@ -167,8 +170,11 @@ fn convert_street(
     let c_gid = county_gid(addr.lanskod.as_deref());
     let l_gid = locality_gid(addr.kommunkod.as_deref());
 
-    let tags = [OSM_STREET, "legacy.layer.address", "legacy.category.street"];
-    let mut indexed_cats: Vec<String> = tags.iter().map(|s| s.to_string()).collect();
+    let visible_cats = vec![
+        LEGACY_LAYER_ADDRESS.to_string(),
+        "legacy.category.street".to_string(),
+    ];
+    let mut indexed_cats = visible_cats.clone();
     indexed_cats.push(SOURCE_BELAGENHET.to_string());
     indexed_cats.push(LAYER_STREET.to_string());
     indexed_cats.push(format!("{COUNTRY_PREFIX}{}", country.name));
@@ -218,7 +224,7 @@ fn convert_street(
                 locality_gid: l_gid,
                 county_gid: c_gid,
                 borough: addr.kommundel_namn.clone(),
-                tags: join_osm_values(&tags.iter().map(|s| s.to_string()).collect::<Vec<_>>()),
+                tags: join_osm_values(&visible_cats),
                 ..Default::default()
             },
         }],

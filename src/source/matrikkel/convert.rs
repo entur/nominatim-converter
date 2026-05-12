@@ -83,18 +83,22 @@ fn convert_address(
     let county_gid = fylkesnummer.as_ref().map(|f| format!("KVE:TopographicPlace:{f}"));
     let locality_gid = addr.kommunenummer.as_ref().map(|k| format!("KVE:TopographicPlace:{k}"));
 
-    let tags = [OSM_ADDRESS, "legacy.source.openaddresses", "legacy.layer.address", "legacy.category.vegadresse"];
+    let visible_cats = vec![
+        LEGACY_SOURCE_OPENADDRESSES.to_string(),
+        LEGACY_LAYER_ADDRESS.to_string(),
+        "legacy.category.vegadresse".to_string(),
+    ];
     let id = format!("KVE:PostalAddress:{}", addr.lokalid);
 
     let id_cat = as_category(&id);
 
-    let mut indexed_cats: Vec<String> = tags.iter().map(|s| s.to_string()).collect();
+    let mut indexed_cats = visible_cats.clone();
     indexed_cats.push(SOURCE_ADRESSE.to_string());
     indexed_cats.push(LAYER_ADDRESS.to_string());
     indexed_cats.push(format!("{COUNTRY_PREFIX}{}", country.name));
     indexed_cats.push(id_cat);
     if let Some(gid) = &county_gid { indexed_cats.push(county_ids_category(gid)); }
-    if let Some(gid) = &locality_gid { indexed_cats.push(county_ids_category(gid)); }
+    if let Some(gid) = &locality_gid { indexed_cats.push(locality_ids_category(gid)); }
 
     let housenumber = match (&addr.nummer, &addr.bokstav) {
         (Some(n), Some(b)) => Some(format!("{n}{b}")),
@@ -140,7 +144,7 @@ fn convert_address(
                 locality_gid,
                 borough: addr.grunnkretsnavn.as_ref().map(|n| titleize(n)),
                 borough_gid: addr.grunnkretsnummer.as_ref().map(|n| format!("borough:{n}")),
-                tags: join_osm_values(&tags.iter().map(|s| s.to_string()).collect::<Vec<_>>()),
+                tags: join_osm_values(&visible_cats),
                 alt_name: addr.adressetilleggsnavn.clone(),
                 ..Default::default()
             },
@@ -165,14 +169,18 @@ fn convert_street(
     let county_gid = fylkesnummer.as_ref().map(|f| format!("KVE:TopographicPlace:{f}"));
     let locality_gid = addr.kommunenummer.as_ref().map(|k| format!("KVE:TopographicPlace:{k}"));
 
-    let tags = [OSM_STREET, "legacy.source.whosonfirst", "legacy.layer.address", "legacy.category.street"];
-    let mut indexed_cats: Vec<String> = tags.iter().map(|s| s.to_string()).collect();
+    let visible_cats = vec![
+        LEGACY_SOURCE_WHOSONFIRST.to_string(),
+        LEGACY_LAYER_ADDRESS.to_string(),
+        "legacy.category.street".to_string(),
+    ];
+    let mut indexed_cats = visible_cats.clone();
     indexed_cats.push(SOURCE_ADRESSE.to_string());
     indexed_cats.push(LAYER_STREET.to_string());
     indexed_cats.push(format!("{COUNTRY_PREFIX}{}", country.name));
     indexed_cats.push(as_category(&id));
     if let Some(gid) = &county_gid { indexed_cats.push(county_ids_category(gid)); }
-    if let Some(gid) = &locality_gid { indexed_cats.push(county_ids_category(gid)); }
+    if let Some(gid) = &locality_gid { indexed_cats.push(locality_ids_category(gid)); }
 
     let mut indexed_alt = Vec::new();
     if let Some(tillegg) = &addr.adressetilleggsnavn { indexed_alt.push(tillegg.clone()); }
@@ -220,7 +228,7 @@ fn convert_street(
                 locality_gid,
                 borough: addr.grunnkretsnavn.as_ref().map(|n| titleize(n)),
                 borough_gid: addr.grunnkretsnummer.as_ref().map(|n| format!("borough:{n}")),
-                tags: join_osm_values(&tags.iter().map(|s| s.to_string()).collect::<Vec<_>>()),
+                tags: join_osm_values(&visible_cats),
                 alt_name: addr.adressetilleggsnavn.clone(),
                 ..Default::default()
             },
@@ -296,9 +304,9 @@ mod tests {
     fn generates_both_address_and_street_entries() {
         let lines = convert_and_read("both", None);
         let address_entries: Vec<&String> = lines.iter()
-            .filter(|l| l.contains("osm.public_transport.address")).collect();
+            .filter(|l| l.contains(&format!("\"{LAYER_ADDRESS}\""))).collect();
         let street_entries: Vec<&String> = lines.iter()
-            .filter(|l| l.contains("osm.public_transport.street")).collect();
+            .filter(|l| l.contains(&format!("\"{LAYER_STREET}\""))).collect();
         assert!(!address_entries.is_empty(), "Should have address entries");
         assert!(!street_entries.is_empty(), "Should have street entries");
     }

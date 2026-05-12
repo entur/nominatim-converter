@@ -226,9 +226,9 @@ fn build_stop_categories(
     fare_zones: &HashMap<String, FareZoneXml>,
 ) -> (Vec<String>, Vec<String>) {
     let source_cat = match role {
-        StopPlaceRole::Parent => "legacy.source.openstreetmap",
-        StopPlaceRole::Child => "legacy.source.geonames",
-        StopPlaceRole::Standalone => "legacy.source.whosonfirst",
+        StopPlaceRole::Parent => LEGACY_SOURCE_OPENSTREETMAP,
+        StopPlaceRole::Child => LEGACY_SOURCE_GEONAMES,
+        StopPlaceRole::Standalone => LEGACY_SOURCE_WHOSONFIRST,
     };
     let multimodal_cat = match role {
         StopPlaceRole::Parent => Some("multimodal.parent".to_string()),
@@ -237,8 +237,7 @@ fn build_stop_categories(
     };
 
     let mut visible_cats = vec![
-        OSM_STOP_PLACE.to_string(),
-        "legacy.layer.venue".to_string(),
+        LEGACY_LAYER_VENUE.to_string(),
     ];
     if sp.transport_mode.as_deref() == Some("funicular") {
         visible_cats.push(format!("{LEGACY_CATEGORY_PREFIX}funicular"));
@@ -406,14 +405,13 @@ pub(crate) fn convert_gosp(
     let importance = RawNumber::from_f64_6dp(raw_importance);
 
     let visible_cats = vec![
-        OSM_GOSP.to_string(),
-        "legacy.layer.address".to_string(),
-        "legacy.source.whosonfirst".to_string(),
+        LAYER_GOSP.to_string(),
+        LEGACY_LAYER_ADDRESS.to_string(),
+        LEGACY_SOURCE_WHOSONFIRST.to_string(),
         format!("{LEGACY_CATEGORY_PREFIX}{GOSP}"),
     ];
     let mut indexed_cats = visible_cats.clone();
     indexed_cats.push(SOURCE_NSR.to_string());
-    indexed_cats.push(LAYER_GOSP.to_string());
     indexed_cats.push(format!("{COUNTRY_PREFIX}{}", country.name));
     if let Some(gid) = &county_gid { indexed_cats.push(county_ids_category(gid)); }
     if let Some(gid) = &locality_gid { indexed_cats.push(locality_ids_category(gid)); }
@@ -737,7 +735,7 @@ mod tests {
         assert!(content.contains("NSR:GroupOfStopPlaces:1"));
         assert!(content.contains("NSR:GroupOfStopPlaces:72"));
         assert!(content.contains("\"name\":\"Oslo\""));
-        assert!(content.contains("osm.public_transport.group_of_stop_places"));
+        assert!(content.contains(LAYER_GOSP));
         let _ = std::fs::remove_file(&output);
     }
 

@@ -55,9 +55,7 @@ fn convert_topo_place(config: &Config, tp: &TopographicPlaceXml, usage: &UsageBo
     let coord = Coordinate::new(centroid_xml.location.latitude, centroid_xml.location.longitude);
     let country = geo::get_country(&coord).unwrap_or_else(Country::no);
 
-    let visible_tag = OSM_CUSTOM_POI;
     let indexed_cats = vec![
-        visible_tag.to_string(),
         SOURCE_POI.to_string(),
         LAYER_POI.to_string(),
         format!("{COUNTRY_PREFIX}{}", country.name),
@@ -87,7 +85,6 @@ fn convert_topo_place(config: &Config, tp: &TopographicPlaceXml, usage: &UsageBo
             extra: Extra {
                 id: Some(id.to_string()),
                 source: Some("custom-poi".to_string()),
-                tags: Some(visible_tag.to_string()),
                 country_a: Some(country.three_letter_code),
                 ..Default::default()
             },
@@ -131,7 +128,7 @@ mod tests {
         let poi1 = lines.iter().find(|l| l.contains("TEST:TopographicPlace:1")).unwrap();
         assert!(poi1.contains("10.75"));
         assert!(poi1.contains("59.91"));
-        assert!(poi1.contains(OSM_CUSTOM_POI));
+        assert!(poi1.contains(LAYER_POI));
         assert!(poi1.contains("custom-poi"));
     }
 

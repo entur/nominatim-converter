@@ -4,22 +4,15 @@
 // Categories are dot-separated strings stored in each place's `categories` array.
 // They serve as facets for filtering/searching in the downstream Photon geocoder.
 //
+// String constants must stay in sync with geocoder/proxy/.../common/Category.kt.
+//
 // Naming convention:
-//   osm.*      — primary entity type (address, street, stop_place, poi, etc.)
-//   source.*   — data source identifier (used by acceptance tests to filter by origin)
-//   layer.*    — broad classification layer (used for result type filtering)
-//   legacy.*   — compatibility categories matching the original converter's output
-//   country.*  — ISO country code
-//   *_gid.*    — geographic ID references (county, locality)
+//   source.*   - data source identifier (used by acceptance tests to filter by origin)
+//   layer.*    - broad classification layer (used for result type filtering)
+//   legacy.*   - compatibility categories matching the original converter's output
+//   country.*  - ISO country code
+//   *_gid.*    - geographic ID references (county, locality)
 // ---------------------------------------------------------------------------
-
-// Primary entity types
-pub const OSM_ADDRESS: &str = "osm.public_transport.address";
-pub const OSM_STREET: &str = "osm.public_transport.street";
-pub const OSM_STOP_PLACE: &str = "osm.public_transport.stop_place";
-pub const OSM_POI: &str = "osm.public_transport.poi";
-pub const OSM_CUSTOM_POI: &str = "osm.public_transport.custom_poi";
-pub const OSM_GOSP: &str = "osm.public_transport.group_of_stop_places";
 
 // Data source identifiers
 pub const SOURCE_ADRESSE: &str = "source.kartverket.matrikkelenadresse";
@@ -38,6 +31,7 @@ pub const LAYER_STREET: &str = "layer.street";
 pub const LAYER_STOP_PLACE: &str = "layer.stopPlace";
 pub const LAYER_GOSP: &str = "layer.groupOfStopPlaces";
 pub const LAYER_POI: &str = "layer.poi";
+pub const LAYER_PLACE: &str = "layer.place";
 
 // Category prefixes
 pub const COUNTRY_PREFIX: &str = "country.";
@@ -47,6 +41,14 @@ pub const FARE_ZONE_PREFIX: &str = "fare_zone_authority.";
 pub const COUNTY_ID_PREFIX: &str = "county_gid.";
 pub const LOCALITY_ID_PREFIX: &str = "locality_gid.";
 pub const LEGACY_CATEGORY_PREFIX: &str = "legacy.category.";
+
+// Legacy compatibility tags carried over from the original converter
+pub const LEGACY_SOURCE_WHOSONFIRST: &str = "legacy.source.whosonfirst";
+pub const LEGACY_SOURCE_OPENADDRESSES: &str = "legacy.source.openaddresses";
+pub const LEGACY_SOURCE_OPENSTREETMAP: &str = "legacy.source.openstreetmap";
+pub const LEGACY_SOURCE_GEONAMES: &str = "legacy.source.geonames";
+pub const LEGACY_LAYER_ADDRESS: &str = "legacy.layer.address";
+pub const LEGACY_LAYER_VENUE: &str = "legacy.layer.venue";
 
 /// Convert a colon-separated ID (e.g. `NSR:StopPlace:123`) to a dot-separated
 /// category string (`NSR.StopPlace.123`), since colons are not valid in categories.

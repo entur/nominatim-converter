@@ -1,6 +1,9 @@
 use std::collections::{BTreeMap, HashMap};
 
-use crate::common::category::{LAYER_POI, SOURCE_OSM};
+use crate::common::category::{
+    county_ids_category, locality_ids_category, COUNTRY_PREFIX, LAYER_POI, LEGACY_CATEGORY_PREFIX,
+    LEGACY_LAYER_ADDRESS, LEGACY_SOURCE_WHOSONFIRST, SOURCE_OSM,
+};
 use crate::common::country::Country;
 use crate::common::extra::Extra;
 use crate::common::geo;
@@ -19,19 +22,6 @@ use super::popularity::OsmPopularityCalculator;
 use super::street::StreetIndex;
 
 use super::coordinate::CoordinateStore;
-
-// ---------------------------------------------------------------------------
-// Category / source / layer constants
-// ---------------------------------------------------------------------------
-
-const LEGACY_SOURCE_WHOSONFIRST: &str = "legacy.source.whosonfirst";
-const LEGACY_LAYER_ADDRESS: &str = "legacy.layer.address";
-const OSM_POI: &str = "osm.public_transport.poi";
-const LEGACY_CATEGORY_PREFIX: &str = "legacy.category.";
-const COUNTRY_PREFIX: &str = "country.";
-const COUNTY_ID_PREFIX: &str = "county_gid.";
-const LOCALITY_ID_PREFIX: &str = "locality_gid.";
-
 
 const ACCURACY_POINT: &str = "point";
 const ACCURACY_POLYGON: &str = "polygon";
@@ -291,7 +281,6 @@ fn build_visible_categories(tags: &BTreeMap<&str, &str>) -> Vec<String> {
     let mut cats = vec![
         LEGACY_SOURCE_WHOSONFIRST.to_string(),
         LEGACY_LAYER_ADDRESS.to_string(),
-        OSM_POI.to_string(),
         format!("{}poi", LEGACY_CATEGORY_PREFIX),
     ];
     for (_, &v) in tags.iter() {
@@ -380,10 +369,10 @@ fn build_indexed_categories(
         cats.push(format!("{}{}", COUNTRY_PREFIX, c.name));
     }
     if let Some(gid) = county_gid {
-        cats.push(format!("{}{}", COUNTY_ID_PREFIX, as_category(gid)));
+        cats.push(county_ids_category(gid));
     }
     if let Some(gid) = locality_gid {
-        cats.push(format!("{}{}", LOCALITY_ID_PREFIX, as_category(gid)));
+        cats.push(locality_ids_category(gid));
     }
     cats
 }
@@ -434,11 +423,6 @@ pub(crate) fn extract_country_code(tags: &HashMap<&str, &str>) -> Option<Country
         }
 
     None
-}
-
-/// Replace colons with dots (for category IDs).
-fn as_category(s: &str) -> String {
-    s.replace(':', ".")
 }
 
 #[cfg(test)]
@@ -647,9 +631,9 @@ mod tests {
         let place = conv.convert_node(42, 59.9, 10.7, &tags).unwrap();
         let cats = &place.content[0].categories;
         assert!(cats.contains(&"legacy.category.hospital".to_string()));
-        assert!(cats.contains(&"legacy.source.whosonfirst".to_string()));
-        assert!(cats.contains(&"legacy.layer.address".to_string()));
-        assert!(cats.contains(&"osm.public_transport.poi".to_string()));
+        assert!(cats.contains(&LEGACY_SOURCE_WHOSONFIRST.to_string()));
+        assert!(cats.contains(&LEGACY_LAYER_ADDRESS.to_string()));
+        assert!(cats.contains(&LAYER_POI.to_string()));
         assert!(cats.contains(&"legacy.category.poi".to_string()));
     }
 
@@ -900,15 +884,4 @@ mod tests {
         assert!(extract_country_code(&tags).is_none());
     }
 
-    // -- as_category --
-
-    #[test]
-    fn as_category_replaces_colons_with_dots() {
-        assert_eq!(as_category("KVE:TopographicPlace:03"), "KVE.TopographicPlace.03");
-    }
-
-    #[test]
-    fn as_category_no_colons_unchanged() {
-        assert_eq!(as_category("simple"), "simple");
-    }
 }

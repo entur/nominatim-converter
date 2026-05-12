@@ -62,10 +62,11 @@ pub(crate) fn convert_to_nominatim(entry: &StedsnavnEntry, config: &Config, impo
     };
     let country = geo::get_country(&coord).unwrap_or_else(Country::no);
 
+    // LEGACY_LAYER_ADDRESS: v2 only has 'venue' and 'address' layers; stedsnavn
+    // (cities/districts/urban areas) falls under v2's broad 'address' bucket.
     let visible_cats = vec![
-        OSM_POI.to_string(),
-        "legacy.source.whosonfirst".to_string(),
-        "legacy.layer.address".to_string(),
+        LEGACY_SOURCE_WHOSONFIRST.to_string(),
+        LEGACY_LAYER_ADDRESS.to_string(),
         format!("{LEGACY_CATEGORY_PREFIX}{}", entry.navneobjekttype),
     ];
 
@@ -75,7 +76,7 @@ pub(crate) fn convert_to_nominatim(entry: &StedsnavnEntry, config: &Config, impo
 
     let mut indexed_cats = visible_cats.clone();
     indexed_cats.push(SOURCE_STEDSNAVN.to_string());
-    indexed_cats.push(LAYER_POI.to_string());
+    indexed_cats.push(LAYER_PLACE.to_string());
     indexed_cats.push(format!("{COUNTRY_PREFIX}{}", country.name));
     indexed_cats.push(county_ids_category(&county_gid));
     indexed_cats.push(locality_ids_category(&locality_gid));
