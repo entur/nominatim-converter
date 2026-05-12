@@ -71,6 +71,7 @@ pub(crate) fn convert_to_nominatim(entry: &StedsnavnEntry, config: &Config, impo
 
     let county_gid = format!("KVE:TopographicPlace:{}", entry.fylkesnummer);
     let locality_gid = format!("KVE:TopographicPlace:{}", entry.kommunenummer);
+    let id = format!("KVE:PlaceName:{}", entry.lokal_id);
 
     let mut indexed_cats = visible_cats.clone();
     indexed_cats.push(SOURCE_STEDSNAVN.to_string());
@@ -78,21 +79,21 @@ pub(crate) fn convert_to_nominatim(entry: &StedsnavnEntry, config: &Config, impo
     indexed_cats.push(format!("{COUNTRY_PREFIX}{}", country.name));
     indexed_cats.push(county_ids_category(&county_gid));
     indexed_cats.push(locality_ids_category(&locality_gid));
-    indexed_cats.push(as_category(&entry.lokal_id));
+    indexed_cats.push(as_category(&id));
 
     let visible_alt: Vec<String> = entry.annen_skrivemaate.iter()
         .filter(|s| s.as_str() != entry.stedsnavn)
         .cloned().collect();
     let mut indexed_alt = visible_alt.clone();
-    indexed_alt.push(entry.lokal_id.clone());
+    indexed_alt.push(id.clone());
 
     let importance = RawNumber::from_f64_6dp(
-        importance_calc.calculate_importance_for(&entry.lokal_id, config.stedsnavn.default_value)
+        importance_calc.calculate_importance_for(&id, config.stedsnavn.default_value)
     );
     NominatimPlace {
         type_: "Place".to_string(),
         content: vec![PlaceContent {
-            place_id: as_place_id(&entry.lokal_id),
+            place_id: as_place_id(&id),
             object_type: "N".to_string(),
             object_id: 0,
             categories: indexed_cats,
@@ -115,7 +116,7 @@ pub(crate) fn convert_to_nominatim(entry: &StedsnavnEntry, config: &Config, impo
             centroid: coord.centroid(),
             bbox: coord.bbox(),
             extra: Extra {
-                id: Some(entry.lokal_id.clone()),
+                id: Some(id.clone()),
                 source: Some("kartverket-stedsnavn".to_string()),
                 accuracy: Some("point".to_string()),
                 country_a: Some(country.three_letter_code),
