@@ -15,6 +15,8 @@ pub struct Extra {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tariff_zones: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub fare_zones: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub county_gid: Option<String>,

@@ -343,10 +343,17 @@ fn build_stop_extra(
     inferred_types: &[String],
     child_stops: &[&StopPlaceXml],
 ) -> Extra {
-    let tariff_zone_list = sp.tariff_zones.as_ref().and_then(|tz| {
-        let refs: Vec<String> = tz.refs.iter().filter_map(|r| r.ref_.clone()).collect();
-        join_osm_values(&refs)
-    });
+    // Split the stop place's <TariffZoneRef>s by ref shape into two output fields, mirroring the
+    // category-prefix split in `append_tariff_zone_categories` so downstream consumers can read
+    // each namespace cleanly without substring inspection.
+    let (tariff_zone_list, fare_zone_list) = sp.tariff_zones.as_ref()
+        .map(|tz| {
+            let (fare_refs, tariff_refs): (Vec<String>, Vec<String>) = tz.refs.iter()
+                .filter_map(|r| r.ref_.clone())
+                .partition(|ref_| ref_.contains(":FareZone:"));
+            (join_osm_values(&tariff_refs), join_osm_values(&fare_refs))
+        })
+        .unwrap_or((None, None));
 
     let description = sp.description.as_ref()
         .filter(|d| !d.is_empty())
@@ -372,6 +379,7 @@ fn build_stop_extra(
         locality: locality.clone(),
         locality_gid: locality_gid.clone(),
         tariff_zones: tariff_zone_list,
+        fare_zones: fare_zone_list,
         alt_name: join_osm_values(visible_alt),
         description,
         tags: join_osm_values(visible_cats),
@@ -848,6 +856,24 @@ mod tests {
         // FareZone refs should NOT also be indexed under tariff_zone_id.
         assert!(!content.contains("tariff_zone_id.RUT.FareZone"));
         assert!(!content.contains("tariff_zone_id.FIN.FareZone"));
+        let _ = std::fs::remove_file(&output);
+    }
+
+    #[test]
+    fn extra_splits_tariff_zones_and_fare_zones_by_ref_shape() {
+        let config = test_config();
+        let input = test_data_path("stopPlaces.xml");
+        let output = std::env::temp_dir().join("test_convert_extra_split.ndjson");
+        convert_all(&config, &input, &output, false, &UsageBoost::empty()).unwrap();
+        let content = std::fs::read_to_string(&output).unwrap();
+        // The stop place's <TariffZones> mixes RUT:TariffZone:1 and RUT:FareZone:4; each should
+        // surface in its own extra field, not the other.
+        let rut_line = content
+            .lines()
+            .find(|l| l.contains("\"id\":\"NSR:StopPlace:") && l.contains("RUT:FareZone:4"))
+            .expect("expected an NSR stop place line carrying the RUT FareZone ref");
+        assert!(rut_line.contains("\"tariff_zones\":\"RUT:TariffZone:1\""), "got: {rut_line}");
+        assert!(rut_line.contains("\"fare_zones\":\"RUT:FareZone:4\""), "got: {rut_line}");
         let _ = std::fs::remove_file(&output);
     }
 
