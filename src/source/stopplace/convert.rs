@@ -14,12 +14,12 @@ use crate::target::nominatim_place::*;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-/// Importance assigned to GoSPs listed in `secondaryGosps`. Must be strictly positive: Photon
+/// Importance floor for GoSPs listed in `secondaryGosps`. Must be strictly positive: Photon
 /// adds importance to the document score after wrapping the query in a `function_score` with
 /// `boostMode=Sum`. Empirically, a negative importance can drive the combined score below zero,
-/// at which point Lucene clamps it and the document disappears from results. 0.001 is small
-/// enough to be dwarfed by real stops' importance (~0.4-0.5) but stays comfortably positive.
-/// Tied to Photon's scoring behavior, not deployment-specific, so kept as a constant.
+/// at which point Lucene clamps it and the document disappears from results. The actual
+/// assigned value is `max(SECONDARY_GOSP_IMPORTANCE, config.importance.floor)` so the
+/// `[floor, 1.0]` invariant always holds even if floor is raised above 0.001.
 const SECONDARY_GOSP_IMPORTANCE: f64 = 0.001;
 
 use super::popularity::calculate_stop_popularity;
@@ -406,18 +406,10 @@ pub(crate) fn convert_gosp(
 
     let gos_pop = calculate_gosp_popularity(gosp, stop_popularities);
     let country = geo::get_country(&coord).unwrap_or_else(Country::no);
-    // GoSP popularity grows multiplicatively with member count and easily exceeds
-    // `importance.maxPopularity`. For home-country GoSPs we use the unclamped variant and
-    // apply the configured multiplier so major Norwegian cities (Bergen, Trondheim) outrank
-    // near-focus streets that share the same name prefix. Foreign GoSPs (e.g. NSR's Berlin ZOB
-    // entry for international bus routes) keep the clamped 0-1 importance so they don't
-    // outrank Norwegian cities for users searching in Norway. Secondary GoSPs (configured in
-    // `secondaryGosps`) get a hard floor so they sink below real stops in autocomplete.
+    // Clamp to `[floor, 1.0]` per the Nominatim 0-1 spec; secondary GoSPs ride the configured
+    // floor (never below) so they sink under real stops in autocomplete.
     let raw_importance = if is_secondary {
-        SECONDARY_GOSP_IMPORTANCE
-    } else if country.name == config.group_of_stop_places.home_country {
-        importance_calc.calculate_importance_unclamped(gos_pop)
-            * config.group_of_stop_places.importance_multiplier
+        SECONDARY_GOSP_IMPORTANCE.max(config.importance.floor)
     } else {
         importance_calc.calculate_importance(gos_pop)
     };
@@ -830,10 +822,11 @@ mod tests {
 
         let demoted = line_for("NSR:GroupOfStopPlaces:1");
         let kept = line_for("NSR:GroupOfStopPlaces:72");
-        assert_eq!(importance_of(&demoted), SECONDARY_GOSP_IMPORTANCE,
-            "demoted GoSP must be pinned at the secondary-GoSP importance constant");
-        assert!(importance_of(&kept) > SECONDARY_GOSP_IMPORTANCE,
-            "non-demoted GoSP importance must exceed the secondary-GoSP floor");
+        let expected_demoted = SECONDARY_GOSP_IMPORTANCE.max(config.importance.floor);
+        assert_eq!(importance_of(&demoted), expected_demoted,
+            "demoted GoSP must be pinned at max(SECONDARY_GOSP_IMPORTANCE, floor)");
+        assert!(importance_of(&kept) >= expected_demoted,
+            "non-demoted GoSP importance must be at or above the secondary-GoSP floor");
         assert!(demoted.contains("\"rank_address\":0"),
             "demoted GoSP must have rank_address=0 (forfeits Photon's short-query +0.4 boost)");
         assert!(!kept.contains("\"rank_address\":0"),

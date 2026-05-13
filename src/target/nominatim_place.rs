@@ -10,11 +10,6 @@ impl RawNumber {
     pub fn from_f64_6dp(val: f64) -> Self {
         Self(format!("{:.6}", val))
     }
-
-    /// Use the default float representation.
-    pub fn from_f64(val: f64) -> Self {
-        Self(val.to_string())
-    }
 }
 
 impl Serialize for RawNumber {
@@ -141,12 +136,6 @@ mod tests {
     fn test_raw_number_6dp_trailing_zeros() {
         let r = RawNumber::from_f64_6dp(1.0);
         assert_eq!(r.0, "1.000000");
-    }
-
-    #[test]
-    fn test_raw_number_default() {
-        let r = RawNumber::from_f64(0.5);
-        assert_eq!(r.0, "0.5");
     }
 
     #[test]

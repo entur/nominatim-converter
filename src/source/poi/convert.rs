@@ -70,10 +70,14 @@ fn convert_topo_place(config: &Config, tp: &TopographicPlaceXml, usage: &UsageBo
             object_id: 0,
             categories: indexed_cats,
             rank_address: config.poi.rank_address,
-            // POI is the only source that provides importance directly (config.poi.importance
-            // is already in the 0-1 output range), so the boost is applied here rather than
-            // through ImportanceCalculator like other sources, with a hard cap at 1.0.
-            importance: RawNumber::from_f64((config.poi.importance * usage.factor(id)).min(1.0)),
+            // POI provides importance directly (config.poi.importance is in 0-1 output range),
+            // so we apply the usage boost here rather than through ImportanceCalculator. Clamp
+            // to `[floor, 1.0]` to match the Nominatim 0-1 spec and the precision used by every
+            // other source.
+            importance: RawNumber::from_f64_6dp(
+                (config.poi.importance * usage.factor(id))
+                    .clamp(config.importance.floor, 1.0),
+            ),
             parent_place_id: None,
             name: Some(Name { name: Some(name.to_string()), name_en: None, alt_name: None }),
             address: Address::default(),
