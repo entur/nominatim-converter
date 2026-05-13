@@ -188,8 +188,6 @@ fn convert_street(
 
     let postort = addr.postort.as_deref().unwrap_or("");
 
-    let indexed_alt = vec![id.clone()];
-
     NominatimPlace {
         type_: "Place".to_string(),
         content: vec![PlaceContent {
@@ -203,7 +201,7 @@ fn convert_street(
             name: Some(Name {
                 name: Some(street_name.clone()),
                 name_en: None,
-                alt_name: join_osm_values(&indexed_alt),
+                alt_name: None,
             }),
             housenumber: None,
             address: Address {

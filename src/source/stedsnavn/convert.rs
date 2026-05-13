@@ -82,11 +82,9 @@ pub(crate) fn convert_to_nominatim(entry: &StedsnavnEntry, config: &Config, impo
     indexed_cats.push(locality_ids_category(&locality_gid));
     indexed_cats.push(as_category(&id));
 
-    let visible_alt: Vec<String> = entry.annen_skrivemaate.iter()
+    let alt_names: Vec<String> = entry.annen_skrivemaate.iter()
         .filter(|s| s.as_str() != entry.stedsnavn)
         .cloned().collect();
-    let mut indexed_alt = visible_alt.clone();
-    indexed_alt.push(id.clone());
 
     let importance = RawNumber::from_f64_6dp(
         importance_calc.calculate_importance_for(&id, config.stedsnavn.default_value)
@@ -104,7 +102,7 @@ pub(crate) fn convert_to_nominatim(entry: &StedsnavnEntry, config: &Config, impo
             name: Some(Name {
                 name: Some(entry.stedsnavn.clone()),
                 name_en: None,
-                alt_name: join_osm_values(&indexed_alt),
+                alt_name: join_osm_values(&alt_names),
             }),
             address: Address {
                 city: Some(titleize(&entry.kommunenavn)),
@@ -125,7 +123,7 @@ pub(crate) fn convert_to_nominatim(entry: &StedsnavnEntry, config: &Config, impo
                 locality: Some(entry.kommunenavn.clone()),
                 locality_gid: Some(locality_gid),
                 tags: join_osm_values(&visible_cats),
-                alt_name: join_osm_values(&visible_alt),
+                alt_name: join_osm_values(&alt_names),
                 ..Default::default()
             },
         }],

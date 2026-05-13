@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, HashMap};
 
 use crate::common::category::{
-    county_ids_category, locality_ids_category, COUNTRY_PREFIX, LAYER_POI, LEGACY_CATEGORY_PREFIX,
-    LEGACY_LAYER_ADDRESS, LEGACY_SOURCE_WHOSONFIRST, SOURCE_OSM,
+    as_category, county_ids_category, locality_ids_category, COUNTRY_PREFIX, LAYER_POI,
+    LEGACY_CATEGORY_PREFIX, LEGACY_LAYER_ADDRESS, LEGACY_SOURCE_WHOSONFIRST, SOURCE_OSM,
 };
 use crate::common::country::Country;
 use crate::common::extra::Extra;
@@ -188,7 +188,7 @@ impl<'a> OsmEntityConverter<'a> {
         let osm_id = format!("OSM:PointOfInterest:{}", entity_id);
 
         let visible_categories = build_visible_categories(tags);
-        let (visible_alt_names, indexed_alt_names) = build_alt_names(tags, name, &osm_id);
+        let alt_names = build_alt_names(tags, name);
         let en_name = tags.get("en:name").copied().map(|s| s.to_string());
 
         let (county_gid, county_name) =
@@ -211,10 +211,11 @@ impl<'a> OsmEntityConverter<'a> {
             &locality,
             &locality_gid,
             &visible_categories,
-            &visible_alt_names,
+            &alt_names,
         );
 
         let indexed_categories = build_indexed_categories(
+            &osm_id,
             &visible_categories,
             &country,
             &county_gid,
@@ -235,7 +236,7 @@ impl<'a> OsmEntityConverter<'a> {
             name: Some(Name {
                 name: Some(name.to_string()),
                 name_en: en_name,
-                alt_name: join_osm_values(&indexed_alt_names),
+                alt_name: join_osm_values(&alt_names),
             }),
             housenumber: None,
             address,
@@ -273,10 +274,6 @@ impl<'a> OsmEntityConverter<'a> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helper functions (extracted from create_place_content)
-// ---------------------------------------------------------------------------
-
 fn build_visible_categories(tags: &BTreeMap<&str, &str>) -> Vec<String> {
     let mut cats = vec![
         LEGACY_SOURCE_WHOSONFIRST.to_string(),
@@ -289,23 +286,14 @@ fn build_visible_categories(tags: &BTreeMap<&str, &str>) -> Vec<String> {
     cats
 }
 
-fn build_alt_names(
-    tags: &BTreeMap<&str, &str>,
-    name: &str,
-    osm_id: &str,
-) -> (Vec<String>, Vec<String>) {
+fn build_alt_names(tags: &BTreeMap<&str, &str>, name: &str) -> Vec<String> {
     let alt_name_keys = ["alt_name", "old_name", "no:name", "loc_name", "short_name"];
-    let visible: Vec<String> = alt_name_keys
+    alt_name_keys
         .iter()
         .filter_map(|&k| tags.get(k).copied())
         .filter(|&v| !v.is_empty() && v != name)
         .map(|s| s.to_string())
-        .collect();
-
-    let mut indexed = visible.clone();
-    indexed.push(osm_id.to_string());
-
-    (visible, indexed)
+        .collect()
 }
 
 fn resolve_county(
@@ -340,7 +328,7 @@ fn build_extra(
     locality: &Option<String>,
     locality_gid: &Option<String>,
     visible_categories: &[String],
-    visible_alt_names: &[String],
+    alt_names: &[String],
 ) -> Extra {
     Extra {
         id: Some(osm_id.to_string()),
@@ -351,12 +339,13 @@ fn build_extra(
         locality: locality.clone(),
         locality_gid: locality_gid.clone(),
         tags: join_osm_values(visible_categories),
-        alt_name: join_osm_values(visible_alt_names),
+        alt_name: join_osm_values(alt_names),
         ..Extra::default()
     }
 }
 
 fn build_indexed_categories(
+    osm_id: &str,
     visible_categories: &[String],
     country: &Option<Country>,
     county_gid: &Option<String>,
@@ -374,6 +363,7 @@ fn build_indexed_categories(
     if let Some(gid) = locality_gid {
         cats.push(locality_ids_category(gid));
     }
+    cats.push(as_category(osm_id));
     cats
 }
 
@@ -724,15 +714,15 @@ mod tests {
     }
 
     #[test]
-    fn convert_node_osm_id_in_indexed_alt_names() {
+    fn convert_node_osm_id_in_categories() {
         let config = test_config_with_osm_filters();
         let (nodes, ways, mut admin, streets, pop) = empty_converter_parts(&config);
         let mut conv = make_converter(&config, &nodes, &ways, &mut admin, &streets, &pop);
 
         let tags = HashMap::from([("name", "Test"), ("amenity", "hospital")]);
         let place = conv.convert_node(42, 59.9, 10.7, &tags).unwrap();
-        let name_alt = place.content[0].name.as_ref().unwrap().alt_name.as_ref().unwrap();
-        assert!(name_alt.contains("OSM:PointOfInterest:42"));
+        let cats = &place.content[0].categories;
+        assert!(cats.contains(&"OSM.PointOfInterest.42".to_string()));
     }
 
     #[test]

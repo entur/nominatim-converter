@@ -171,7 +171,7 @@ pub(crate) fn convert_stop_place(
         sp, &role, &inferred_types, &country, &county_gid, &locality_gid, fare_zones,
     );
 
-    let indexed_alt = build_stop_alt_names(sp, sp_name, child_stop_names);
+    let alt_names = build_stop_alt_names(sp, sp_name, child_stop_names);
     let visible_alt: Vec<String> = alt_stop_names(sp, sp_name, Some("label"));
 
     let entry = NominatimPlace {
@@ -187,7 +187,7 @@ pub(crate) fn convert_stop_place(
             name: Some(Name {
                 name: Some(sp_name.to_string()),
                 name_en: None,
-                alt_name: join_osm_values(&indexed_alt),
+                alt_name: join_osm_values(&alt_names),
             }),
             address: Address { city: locality.clone(), county: county.clone(), ..Default::default() },
             housenumber: None,
@@ -324,11 +324,10 @@ fn append_tariff_zone_categories(
 }
 
 fn build_stop_alt_names(sp: &StopPlaceXml, sp_name: &str, child_stop_names: &[String]) -> Vec<String> {
-    let mut indexed_alt: Vec<String> = alt_stop_names(sp, sp_name, None);
-    indexed_alt.extend_from_slice(child_stop_names);
-    indexed_alt.push(sp.id.clone());
-    dedup_preserve_order(&mut indexed_alt);
-    indexed_alt
+    let mut alt_names: Vec<String> = alt_stop_names(sp, sp_name, None);
+    alt_names.extend_from_slice(child_stop_names);
+    dedup_preserve_order(&mut alt_names);
+    alt_names
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -444,6 +443,15 @@ pub(crate) fn convert_gosp(
     // "Bergen" GoSP below real Bergen stops without modifying any user-visible field.
     let rank_address = if is_secondary { 0 } else { config.group_of_stop_places.rank_address };
 
+    let mut member_names: Vec<String> = gosp.members.as_ref()
+        .map(|m| m.refs.iter()
+            .filter_map(|r| stop_by_id.get(r.ref_.as_str()).copied())
+            .filter_map(|sp| sp.name.clone())
+            .filter(|n| n != group_name)
+            .collect())
+        .unwrap_or_default();
+    dedup_preserve_order(&mut member_names);
+
     Some(NominatimPlace {
         type_: "Place".to_string(),
         content: vec![PlaceContent {
@@ -457,7 +465,7 @@ pub(crate) fn convert_gosp(
             name: Some(Name {
                 name: Some(group_name.to_string()),
                 name_en: None,
-                alt_name: Some(gosp.id.clone()),
+                alt_name: join_osm_values(&member_names),
             }),
             address: Address { city: locality.clone(), county: county.clone(), ..Default::default() },
             housenumber: None,
@@ -757,6 +765,41 @@ mod tests {
         assert!(content.contains("\"name\":\"Oslo\""));
         assert!(content.contains(LAYER_GOSP));
         let _ = std::fs::remove_file(&output);
+    }
+
+    #[test]
+    fn gosp_alt_name_contains_member_stop_names_not_id() {
+        let config = test_config();
+        let importance_calc = ImportanceCalculator::new(&config.importance, &EMPTY_USAGE);
+
+        let oslo_s = make_stop_place("NSR:StopPlace:59872", "Oslo S", Some("rail"), Some("railStation"));
+        let oslo_bus = make_stop_place("NSR:StopPlace:58366", "Oslo Bussterminal", Some("bus"), Some("busStation"));
+        let stop_by_id: HashMap<&str, &StopPlaceXml> = HashMap::from([
+            ("NSR:StopPlace:59872", &oslo_s),
+            ("NSR:StopPlace:58366", &oslo_bus),
+        ]);
+
+        let gosp = GroupOfStopPlacesXml {
+            id: "NSR:GroupOfStopPlaces:1".to_string(),
+            name: Some("Oslo".to_string()),
+            centroid: Some(CentroidXml { location: LocationXml { longitude: 10.75, latitude: 59.91 } }),
+            members: Some(MembersXml {
+                refs: vec![
+                    RefAttr { ref_: "NSR:StopPlace:59872".to_string() },
+                    RefAttr { ref_: "NSR:StopPlace:58366".to_string() },
+                ],
+            }),
+        };
+
+        let result = convert_gosp(
+            &config, &importance_calc, &gosp, &HashMap::new(),
+            &HashMap::new(), &stop_by_id, false,
+        ).unwrap();
+
+        let alt_name = result.content[0].name.as_ref().unwrap().alt_name.as_deref().unwrap_or("");
+        assert!(alt_name.contains("Oslo S"), "alt_name should include member 'Oslo S': {alt_name}");
+        assert!(alt_name.contains("Oslo Bussterminal"), "alt_name should include member 'Oslo Bussterminal': {alt_name}");
+        assert!(!alt_name.contains("NSR:GroupOfStopPlaces:1"), "alt_name must not contain the GoSP id: {alt_name}");
     }
 
     #[test]

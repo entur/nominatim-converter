@@ -182,10 +182,6 @@ fn convert_street(
     if let Some(gid) = &county_gid { indexed_cats.push(county_ids_category(gid)); }
     if let Some(gid) = &locality_gid { indexed_cats.push(locality_ids_category(gid)); }
 
-    let mut indexed_alt = Vec::new();
-    if let Some(tillegg) = &addr.adressetilleggsnavn { indexed_alt.push(tillegg.clone()); }
-    indexed_alt.push(id.clone());
-
     let fylkesnavn = addr.kommunenummer.as_ref()
         .and_then(|k| kommune_mapping.get(k).map(|i| titleize(&i.fylkesnavn)));
 
@@ -206,7 +202,7 @@ fn convert_street(
             name: Some(Name {
                 name: Some(street_name.to_string()),
                 name_en: None,
-                alt_name: join_osm_values(&indexed_alt),
+                alt_name: addr.adressetilleggsnavn.clone(),
             }),
             housenumber: None,
             address: Address {
