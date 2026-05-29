@@ -51,10 +51,59 @@ pub const LEGACY_SOURCE_GEONAMES: &str = "legacy.source.geonames";
 pub const LEGACY_LAYER_ADDRESS: &str = "legacy.layer.address";
 pub const LEGACY_LAYER_VENUE: &str = "legacy.layer.venue";
 
-/// Convert a colon-separated ID (e.g. `NSR:StopPlace:123`) to a dot-separated
-/// category string (`NSR.StopPlace.123`), since colons are not valid in categories.
+/// Transliteration table loaded from `transliteration.csv` - the single source
+/// for char -> replacement mappings, duplicated byte-identically in the geocoder
+/// repo (proxy/src/main/resources/transliteration.csv). See the CSV header for
+/// the sync and reindex constraints.
+static TRANSLITERATIONS: std::sync::OnceLock<std::collections::HashMap<char, String>> =
+    std::sync::OnceLock::new();
+
+fn transliterations() -> &'static std::collections::HashMap<char, String> {
+    TRANSLITERATIONS.get_or_init(|| {
+        include_str!("transliteration.csv")
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .map(|l| {
+                let (from, to) = l
+                    .split_once(';')
+                    .unwrap_or_else(|| panic!("transliteration.csv: bad line: {l}"));
+                let mut chars = from.chars();
+                let c = chars.next().unwrap_or_else(|| panic!("transliteration.csv: empty char: {l}"));
+                assert!(chars.next().is_none(), "transliteration.csv: left side must be one char: {l}");
+                (c, to.to_string())
+            })
+            .collect()
+    })
+}
+
+/// Convert a colon-separated ID to a Photon-safe category string.
+///
+/// Photon's `CATEGORY_PATTERN` (`[a-zA-Z0-9_-]+(\.[a-zA-Z0-9_-]+)+`) drops any
+/// category containing characters outside that set at both index time
+/// (`PhotonDoc.categories`) and query time (`RequestFactoryBase`). To make
+/// street IDs with Norwegian or other European-diacritic names queryable,
+/// colons become dots (namespace separators), characters in the allowed set
+/// pass through, table characters are transliterated (å -> aa, ø -> oe, etc.),
+/// and anything else becomes `_`.
+///
+/// The geocoder proxy applies the same transform (`Category.kt::asCategory`)
+/// from its copy of the same table when querying - the two must produce
+/// byte-identical output.
 pub fn as_category(s: &str) -> String {
-    s.replace(':', ".")
+    let map = transliterations();
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            ':' => out.push('.'),
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-' => out.push(c),
+            _ => match map.get(&c) {
+                Some(replacement) => out.push_str(replacement),
+                None => out.push('_'),
+            },
+        }
+    }
+    out
 }
 
 pub fn tariff_zone_id_category(ref_: &str) -> String {
@@ -89,6 +138,58 @@ mod tests {
     #[test]
     fn test_as_category_no_colons() {
         assert_eq!(as_category("something"), "something");
+    }
+
+    #[test]
+    fn test_as_category_norwegian_diacritics() {
+        assert_eq!(
+            as_category("KVE:TopographicPlace:3907-Årfuglveien"),
+            "KVE.TopographicPlace.3907-Aarfuglveien"
+        );
+        assert_eq!(as_category("Bjølsen"), "Bjoelsen");
+        assert_eq!(as_category("Lærdal"), "Laerdal");
+        assert_eq!(as_category("Tromsø"), "Tromsoe");
+        assert_eq!(as_category("Ålesund"), "Aalesund");
+    }
+
+    #[test]
+    fn test_as_category_street_with_spaces() {
+        assert_eq!(
+            as_category("KVE:TopographicPlace:0301-Karl Johans gate"),
+            "KVE.TopographicPlace.0301-Karl_Johans_gate"
+        );
+    }
+
+    #[test]
+    fn test_as_category_fallback_and_unicode() {
+        // Chars not in the table become a single `_` - including astral-plane
+        // chars, which must match the Kotlin side's code-point iteration.
+        assert_eq!(as_category("São Tomé"), "S_o_Tome");
+        assert_eq!(as_category("Kárášjohka"), "Kara_johka");
+        assert_eq!(as_category("emoji 🚀 char"), "emoji___char");
+    }
+
+    #[test]
+    fn test_as_category_passes_photon_pattern() {
+        // PhotonDoc.CATEGORY_PATTERN: [a-zA-Z0-9_-]+(\.[a-zA-Z0-9_-]+)+
+        fn matches_photon_pattern(s: &str) -> bool {
+            let segments: Vec<&str> = s.split('.').collect();
+            if segments.len() < 2 { return false; }
+            segments.iter().all(|seg| {
+                !seg.is_empty() && seg.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            })
+        }
+        for input in [
+            "KVE:TopographicPlace:0301-Karl Johans gate",
+            "KVE:TopographicPlace:3407-Fahlstrøms plass",
+            "KVE:PlaceName:434810",
+            "KVE:Borough:34200205",
+            "NSR:StopPlace:337",
+            "OSM:TopographicPlace:545260792",
+        ] {
+            let out = as_category(input);
+            assert!(matches_photon_pattern(&out), "as_category({input}) = {out} does not match Photon CATEGORY_PATTERN");
+        }
     }
 
     #[test]

@@ -1,0 +1,68 @@
+# Transliteration table for ID -> Photon category conversion: char;replacement.
+#
+# DUPLICATED FILE - kept byte-identical in two repos:
+#   nominatim-converter: src/common/transliteration.csv
+#   geocoder:            proxy/src/main/resources/transliteration.csv
+#
+# Any change here MUST be reflected in the other repo's copy. The converter
+# writes these categories into the Photon index and the proxy queries them with
+# exact string match, so both sides must apply the identical table. Changing
+# the table also requires a full reindex plus lockstep deploy of converter and
+# proxy - the old mapping is baked into the indexed categories.
+#
+# Sync is manual; drift is caught by the street place-lookup cases in
+# geocoder-acceptance-tests (test_cases/place.json and v3/test_cases/place.json,
+# e.g. "street-with-diacritics") which fail when index and query side disagree.
+#
+# Characters not in this table and outside [a-zA-Z0-9_-] are replaced with `_`.
+å;aa
+Å;Aa
+ø;oe
+Ø;Oe
+æ;ae
+Æ;Ae
+ä;ae
+Ä;Ae
+ö;oe
+Ö;Oe
+ü;ue
+Ü;Ue
+ß;ss
+é;e
+è;e
+ê;e
+ë;e
+É;E
+È;E
+Ê;E
+Ë;E
+á;a
+à;a
+â;a
+Á;A
+À;A
+Â;A
+í;i
+ì;i
+î;i
+ï;i
+Í;I
+Ì;I
+Î;I
+Ï;I
+ó;o
+ò;o
+ô;o
+Ó;O
+Ò;O
+Ô;O
+ú;u
+ù;u
+û;u
+Ú;U
+Ù;U
+Û;U
+ñ;n
+Ñ;N
+ç;c
+Ç;C

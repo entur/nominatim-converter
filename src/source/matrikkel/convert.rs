@@ -143,7 +143,7 @@ fn convert_address(
                 locality: addr.kommunenavn.as_ref().map(|n| titleize(n)),
                 locality_gid,
                 borough: addr.grunnkretsnavn.as_ref().map(|n| titleize(n)),
-                borough_gid: addr.grunnkretsnummer.as_ref().map(|n| format!("borough:{n}")),
+                borough_gid: addr.grunnkretsnummer.as_ref().map(|n| format!("KVE:Borough:{n}")),
                 tags: join_osm_values(&visible_cats),
                 alt_name: addr.adressetilleggsnavn.clone(),
                 ..Default::default()
@@ -223,7 +223,7 @@ fn convert_street(
                 locality: addr.kommunenavn.as_ref().map(|n| titleize(n)),
                 locality_gid,
                 borough: addr.grunnkretsnavn.as_ref().map(|n| titleize(n)),
-                borough_gid: addr.grunnkretsnummer.as_ref().map(|n| format!("borough:{n}")),
+                borough_gid: addr.grunnkretsnummer.as_ref().map(|n| format!("KVE:Borough:{n}")),
                 tags: join_osm_values(&visible_cats),
                 alt_name: addr.adressetilleggsnavn.clone(),
                 ..Default::default()
@@ -269,7 +269,7 @@ mod tests {
         assert_eq!(extra["locality"].as_str().unwrap(), "Elverum");
         assert_eq!(extra["locality_gid"].as_str().unwrap(), "KVE:TopographicPlace:3420");
         assert_eq!(extra["borough"].as_str().unwrap(), "Grindalsmoen");
-        assert_eq!(extra["borough_gid"].as_str().unwrap(), "borough:34200205");
+        assert_eq!(extra["borough_gid"].as_str().unwrap(), "KVE:Borough:34200205");
 
         assert_eq!(content["housenumber"].as_str().unwrap(), "1A");
         assert_eq!(content["address"]["street"].as_str().unwrap(), "Ildervegen");
