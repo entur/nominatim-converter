@@ -48,6 +48,12 @@ pub(crate) struct OsmEntityConverter<'a> {
     pub(crate) popularity_calculator: &'a OsmPopularityCalculator,
     pub(crate) importance_calc: ImportanceCalculator<'a>,
     pub(crate) config: &'a Config,
+    /// Way id -> chosen entrance/gate point. Pre-filtered to features worth enriching; empty when
+    /// enrichment is disabled, so the override below is then a no-op for every feature.
+    pub(crate) way_entrance_points: &'a HashMap<i64, super::entrance::EntrancePoint>,
+    /// Relation id -> chosen entrance/gate point (multipolygon area features). Keyed separately
+    /// from ways because a way id and a relation id can collide numerically.
+    pub(crate) relation_entrance_points: &'a HashMap<i64, super::entrance::EntrancePoint>,
 }
 
 impl<'a> OsmEntityConverter<'a> {
@@ -96,7 +102,11 @@ impl<'a> OsmEntityConverter<'a> {
         if name.is_empty() {
             return None;
         }
-        let coord = self.way_centroids.get(id)?;
+        let mut coord = self.way_centroids.get(id)?;
+        // Substitute the entrance/gate coordinate for large area features worth enriching.
+        if let Some(ep) = self.way_entrance_points.get(&id) {
+            coord = ep.coord;
+        }
         let tags = self.filter_tags(all_tags);
         Some(self.create_place_content(
             id,
@@ -127,7 +137,11 @@ impl<'a> OsmEntityConverter<'a> {
             return None;
         }
 
-        let centroid = calculate_centroid(&member_coords)?;
+        let mut centroid = calculate_centroid(&member_coords)?;
+        // Substitute the entrance/gate coordinate for large multipolygon area features.
+        if let Some(ep) = self.relation_entrance_points.get(&id) {
+            centroid = ep.coord;
+        }
         let tags = self.filter_tags(all_tags);
 
         let fallback_county = if tags.get("type") == Some(&"boundary")
@@ -423,9 +437,12 @@ mod tests {
     use super::super::admin::ADMIN_LEVEL_MUNICIPALITY;
     use super::super::geometry::BoundingBox;
     use crate::source::test_helpers::test_config_with_osm_filters;
+    use super::super::entrance::EntrancePoint;
 
     static EMPTY_USAGE: std::sync::LazyLock<UsageBoost> =
         std::sync::LazyLock::new(UsageBoost::empty);
+    static EMPTY_ENTRANCE_POINTS: std::sync::LazyLock<HashMap<i64, EntrancePoint>> =
+        std::sync::LazyLock::new(HashMap::new);
 
     fn make_converter<'a>(
         config: &'a Config,
@@ -435,6 +452,21 @@ mod tests {
         street_index: &'a StreetIndex,
         pop_calc: &'a OsmPopularityCalculator,
     ) -> OsmEntityConverter<'a> {
+        make_converter_with_entrances(
+            config, nodes, ways, admin_index, street_index, pop_calc, &EMPTY_ENTRANCE_POINTS,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn make_converter_with_entrances<'a>(
+        config: &'a Config,
+        nodes: &'a CoordinateStore,
+        ways: &'a CoordinateStore,
+        admin_index: &'a mut AdministrativeBoundaryIndex,
+        street_index: &'a StreetIndex,
+        pop_calc: &'a OsmPopularityCalculator,
+        entrance_points: &'a HashMap<i64, EntrancePoint>,
+    ) -> OsmEntityConverter<'a> {
         OsmEntityConverter {
             nodes_coords: nodes,
             way_centroids: ways,
@@ -443,6 +475,8 @@ mod tests {
             popularity_calculator: pop_calc,
             importance_calc: ImportanceCalculator::new(&config.importance, &EMPTY_USAGE),
             config,
+            way_entrance_points: entrance_points,
+            relation_entrance_points: &EMPTY_ENTRANCE_POINTS,
         }
     }
 
@@ -872,6 +906,51 @@ mod tests {
     fn extract_country_code_returns_none_for_non_numeric_ref() {
         let tags = HashMap::from([("ref", "abc")]);
         assert!(extract_country_code(&tags).is_none());
+    }
+
+    // -- entrance enrichment override --
+
+    #[test]
+    fn convert_way_uses_entrance_coord_when_present() {
+        let config = test_config_with_osm_filters();
+        let (nodes, _ways, mut admin, streets, pop) = empty_converter_parts(&config);
+        let mut ways = CoordinateStore::new(16);
+        // Way centroid sits inside the camp; the gate is on the perimeter.
+        ways.put(518127311, Coordinate { lat: 60.90, lon: 11.60 });
+        let gate = Coordinate { lat: 60.8771, lon: 11.5503 };
+        let entrance_points = HashMap::from([(
+            518127311_i64,
+            EntrancePoint { node_id: 1240473681, coord: gate },
+        )]);
+        let mut conv = make_converter_with_entrances(
+            &config, &nodes, &ways, &mut admin, &streets, &pop, &entrance_points,
+        );
+
+        let tags = HashMap::from([("name", "Terningmoen Leir"), ("tourism", "attraction")]);
+        let place = conv.convert_way(518127311, &tags).unwrap();
+        let c = &place.content[0].centroid; // [lon, lat]
+        assert!((c[0] - 11.5503).abs() < 1e-6, "lon should be the gate's");
+        assert!((c[1] - 60.8771).abs() < 1e-6, "lat should be the gate's");
+        // bbox tracks the substituted point, not the centroid.
+        let b = &place.content[0].bbox;
+        assert!((b[0] - 11.5503).abs() < 1e-6);
+        assert!((b[1] - 60.8771).abs() < 1e-6);
+    }
+
+    #[test]
+    fn convert_way_keeps_centroid_when_no_entrance() {
+        let config = test_config_with_osm_filters();
+        let (nodes, _ways, mut admin, streets, pop) = empty_converter_parts(&config);
+        let mut ways = CoordinateStore::new(16);
+        ways.put(999, Coordinate { lat: 60.90, lon: 11.60 });
+        // empty entrance_points (the default) -> no override
+        let mut conv = make_converter(&config, &nodes, &ways, &mut admin, &streets, &pop);
+
+        let tags = HashMap::from([("name", "Somewhere"), ("tourism", "attraction")]);
+        let place = conv.convert_way(999, &tags).unwrap();
+        let c = &place.content[0].centroid;
+        assert!((c[0] - 11.60).abs() < 1e-6);
+        assert!((c[1] - 60.90).abs() < 1e-6);
     }
 
 }

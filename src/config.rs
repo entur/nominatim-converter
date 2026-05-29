@@ -58,6 +58,10 @@ pub struct PoiFilter {
     pub key: String,
     pub value: String,
     pub priority: i32,
+    /// When true, substitute an associated entrance/gate coordinate for the polygon centroid of
+    /// matching large-area features (those at least `MIN_AREA_SIZE_METERS` across). Off by default.
+    #[serde(rename = "useEntrance", default)]
+    pub use_entrance: bool,
 }
 
 #[derive(Deserialize, Clone)]

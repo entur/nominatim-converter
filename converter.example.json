@@ -15,8 +15,8 @@
       { "key": "shop", "value": "mall", "priority": 9 },
       { "key": "amenity", "value": "college", "priority": 8 },
       { "key": "amenity", "value": "place_of_worship", "priority": 8 },
-      { "key": "amenity", "value": "exhibition_centre", "priority": 8 },
-      { "key": "leisure", "value": "park", "priority": 8 },
+      { "key": "amenity", "value": "exhibition_centre", "priority": 8, "useEntrance": true },
+      { "key": "leisure", "value": "park", "priority": 8, "useEntrance": true },
       { "key": "leisure", "value": "sports_centre", "priority": 8 },
       { "key": "leisure", "value": "stadium", "priority": 8 },
       { "key": "tourism", "value": "museum", "priority": 8 },
@@ -57,7 +57,9 @@
       { "key": "amenity", "value": "bank", "priority": 1 },
       { "key": "amenity", "value": "courthouse", "priority": 1 },
       { "key": "amenity", "value": "townhall", "priority": 1 },
-      { "key": "tourism", "value": "attraction", "priority": 1 }
+      { "key": "tourism", "value": "attraction", "priority": 1 },
+      { "key": "landuse", "value": "military", "priority": 1, "useEntrance": true },
+      { "key": "landuse", "value": "quarry", "priority": 1, "useEntrance": true }
     ]
   },
   "stedsnavn": {

@@ -127,6 +127,31 @@ Defaults: `alpha=0.5`, `usageFloor=100`. With those, a stop with 10000x the
 floor (~1M boardings) gets a ~3x popularity nudge - meaningful but bounded;
 airports keep dominating the top by structural ranking.
 
+## Entrance enrichment (OSM)
+
+Large area features (military areas, parks, quarries, campuses) are emitted with their polygon
+**centroid** as the coordinate, which is a poor routing destination - it can sit deep inside an
+inaccessible area. For OSM ways and multipolygon relations you can substitute an
+**entrance/gate** coordinate instead, per POI filter:
+
+```json
+{ "key": "landuse", "value": "military", "priority": 1, "useEntrance": true }
+```
+
+**`useEntrance`** - if the feature contains an entrance/gate node, emit that node's coordinate
+instead of the centroid; features without one keep their centroid. Candidate nodes are
+`entrance=*` (except `entrance=no`), `routing:entrance=*`, or a passable `barrier=*` (gate,
+lift_gate, swing_gate, bollard, cycle_barrier, kissing_gate, block, chain). When a feature has
+several, one is chosen by priority: an explicit `*=main` marker > a pedestrian `entrance=*` node >
+a `barrier=*` gate node > a routable gate (on a `highway=*`) > the gate on the most major road;
+ties broken by smaller node id.
+
+It only applies to features at least `MIN_AREA_SIZE_METERS` (150 m) across their longer
+bounding-box side; smaller features are always emitted unchanged. Selection is per-feature, so
+every co-named parcel that physically contains the gate is enriched (not just one). Enrichment
+runs only if at least one filter sets the flag, and the run log reports how many features were
+enriched and the centroid->entrance distance distribution.
+
 ## Output format
 
 NDJSON (newline-delimited JSON). First line is a header:

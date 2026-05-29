@@ -262,10 +262,29 @@ impl OsmConverter {
             .copied()
             .collect();
 
-        let (node_data, way_data, rel_data) =
-            pass4::collect_pass4_data(input, &all_needed_way_ids, popularity_calculator)?;
+        let enrichment_enabled = popularity_calculator.any_entrance_filter();
+        let (node_data, way_data, rel_data, entrance_data) = pass4::collect_pass4_data(
+            input,
+            &all_needed_way_ids,
+            popularity_calculator,
+            enrichment_enabled,
+        )?;
 
         pass4::compute_way_centroids(&way_data, nodes_coords, way_centroids);
+
+        let overrides = if enrichment_enabled {
+            pass4::compute_entrance_overrides(
+                &entrance_data,
+                &way_data,
+                &rel_data,
+                poi_way_ids,
+                nodes_coords,
+                way_centroids,
+                popularity_calculator,
+            )
+        } else {
+            pass4::EntranceOverrides::default()
+        };
 
         let importance_calc = ImportanceCalculator::new(&self.config.importance, usage);
         let mut converter = OsmEntityConverter {
@@ -276,6 +295,8 @@ impl OsmConverter {
             popularity_calculator,
             importance_calc,
             config: &self.config,
+            way_entrance_points: &overrides.way_points,
+            relation_entrance_points: &overrides.rel_points,
         };
 
         let mut results: Vec<NominatimPlace> = Vec::new();

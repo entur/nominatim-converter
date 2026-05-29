@@ -1,0 +1,108 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<osm version="0.6" generator="hand-authored Terningmoen entrance-enrichment fixture">
+  <!-- Fence enclosure (518127311) perimeter corners -->
+  <node id="1001" lat="60.8700" lon="11.5400"/>
+  <node id="1002" lat="60.8700" lon="11.5600"/>
+  <node id="1003" lat="60.8800" lon="11.5600"/>
+  <node id="1004" lat="60.8800" lon="11.5400"/>
+  <!-- The gate: barrier=lift_gate on the fence/landuse perimeter and on the roads -->
+  <node id="1240473681" lat="60.8750" lon="11.5600">
+    <tag k="barrier" v="lift_gate"/>
+  </node>
+  <!-- Extra corners for the co-located landuse parcel (518428220) -->
+  <node id="1005" lat="60.8700" lon="11.5800"/>
+  <node id="1006" lat="60.8800" lon="11.5800"/>
+  <!-- Road end nodes (inside / outside the gate) -->
+  <node id="2001" lat="60.8750" lon="11.5700"/>
+  <node id="2002" lat="60.8750" lon="11.5500"/>
+  <!-- Separate co-named parcel (50537344) that does NOT touch the gate -->
+  <node id="3001" lat="60.8600" lon="11.5200"/>
+  <node id="3002" lat="60.8600" lon="11.5300"/>
+  <node id="3003" lat="60.8650" lon="11.5300"/>
+  <node id="3004" lat="60.8650" lon="11.5200"/>
+
+  <!-- The canonical named entity: barrier=fence carrying name + wikidata -->
+  <way id="518127311">
+    <nd ref="1001"/>
+    <nd ref="1002"/>
+    <nd ref="1240473681"/>
+    <nd ref="1003"/>
+    <nd ref="1004"/>
+    <nd ref="1001"/>
+    <tag k="barrier" v="fence"/>
+    <tag k="landuse" v="military"/>
+    <tag k="name" v="Terningmoen Leir"/>
+    <tag k="wikidata" v="Q7702950"/>
+    <tag k="access" v="private"/>
+  </way>
+
+  <!-- Second co-named landuse parcel that also contains the gate -->
+  <way id="518428220">
+    <nd ref="1002"/>
+    <nd ref="1240473681"/>
+    <nd ref="1005"/>
+    <nd ref="1006"/>
+    <nd ref="1003"/>
+    <nd ref="1002"/>
+    <tag k="landuse" v="military"/>
+    <tag k="name" v="Terningmoen"/>
+    <tag k="access" v="permissive"/>
+  </way>
+
+  <!-- Through-road split by the gate: makes the gate routable -->
+  <way id="845258844">
+    <nd ref="1240473681"/>
+    <nd ref="2001"/>
+    <tag k="highway" v="unclassified"/>
+    <tag k="access" v="private"/>
+  </way>
+  <way id="845260051">
+    <nd ref="2002"/>
+    <nd ref="1240473681"/>
+    <tag k="highway" v="unclassified"/>
+  </way>
+
+  <!-- Co-named outer parcel with NO gate of its own (the cross-object case) -->
+  <way id="50537344">
+    <nd ref="3001"/>
+    <nd ref="3002"/>
+    <nd ref="3003"/>
+    <nd ref="3004"/>
+    <nd ref="3001"/>
+    <tag k="landuse" v="military"/>
+    <tag k="name" v="Terningmoen"/>
+    <tag k="access" v="permissive"/>
+  </way>
+
+  <!-- A separate large military area mapped as a multipolygon RELATION, with its own gate.
+       Exercises the relation path: useEntrance must move the relation's point to gate2. -->
+  <node id="4001" lat="60.9000" lon="11.5000"/>
+  <node id="4002" lat="60.9000" lon="11.5200"/>
+  <node id="4003" lat="60.9100" lon="11.5200"/>
+  <node id="4004" lat="60.9100" lon="11.5000"/>
+  <node id="1240473682" lat="60.9050" lon="11.5200">
+    <tag k="barrier" v="gate"/>
+  </node>
+  <node id="5001" lat="60.9050" lon="11.5300"/>
+  <!-- Outer ring of the multipolygon (geometry only; feature tags live on the relation) -->
+  <way id="600001">
+    <nd ref="4001"/>
+    <nd ref="4002"/>
+    <nd ref="1240473682"/>
+    <nd ref="4003"/>
+    <nd ref="4004"/>
+    <nd ref="4001"/>
+  </way>
+  <!-- Service road through the relation's gate -> makes gate2 routable -->
+  <way id="600002">
+    <nd ref="1240473682"/>
+    <nd ref="5001"/>
+    <tag k="highway" v="service"/>
+  </way>
+  <relation id="9000001">
+    <member type="way" ref="600001" role="outer"/>
+    <tag k="type" v="multipolygon"/>
+    <tag k="landuse" v="military"/>
+    <tag k="name" v="Terningmoen Skytefelt"/>
+  </relation>
+</osm>

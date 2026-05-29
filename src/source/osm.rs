@@ -9,6 +9,7 @@
 mod admin;
 mod coordinate;
 mod entity;
+mod entrance;
 mod geometry;
 mod indexing;
 mod pass4;

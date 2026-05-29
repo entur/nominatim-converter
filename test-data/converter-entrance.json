@@ -1,0 +1,20 @@
+{
+  "osm": {
+    "defaultValue": 1.0,
+    "rankAddress": { "boundary": 10, "place": 20, "road": 26, "building": 28, "poi": 30 },
+    "filters": [
+      { "key": "landuse", "value": "military", "priority": 5, "useEntrance": true }
+    ]
+  },
+  "stedsnavn": { "defaultValue": 40.0, "rankAddress": 16 },
+  "matrikkel": { "addressPopularity": 20.0, "streetPopularity": 20.0, "rankAddress": 26 },
+  "poi": { "importance": 0.5, "rankAddress": 30 },
+  "stopPlace": {
+    "defaultValue": 50,
+    "rankAddress": 30,
+    "stopTypeFactors": { "busStation": 2.0 },
+    "interchangeFactors": { "preferredInterchange": 10.0 }
+  },
+  "groupOfStopPlaces": { "rankAddress": 30 },
+  "importance": { "minPopularity": 1.0, "maxPopularity": 1000000000.0, "floor": 0.1 }
+}

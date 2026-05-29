@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::config::Config;
 
@@ -6,6 +6,7 @@ struct POIFilter {
     key: String,
     value: String,
     priority: i32,
+    use_entrance: bool,
 }
 
 pub struct OsmPopularityCalculator {
@@ -23,12 +24,26 @@ impl OsmPopularityCalculator {
                 key: f.key.clone(),
                 value: f.value.clone(),
                 priority: f.priority,
+                use_entrance: f.use_entrance,
             })
             .collect();
         Self {
             filters,
             default_value: config.osm.default_value,
         }
+    }
+
+    /// True if any filter opts into entrance handling. Used to gate the (otherwise free) extra
+    /// entrance collection in pass 4 so it does no work unless configured.
+    pub fn any_entrance_filter(&self) -> bool {
+        self.filters.iter().any(|f| f.use_entrance)
+    }
+
+    /// True if any filter matching these tags has `useEntrance`.
+    pub fn use_entrance(&self, tags: &HashMap<&str, &str>) -> bool {
+        self.filters
+            .iter()
+            .any(|f| f.use_entrance && tags.get(f.key.as_str()) == Some(&f.value.as_str()))
     }
 
     /// Returns `default_value * highest_matching_priority`, or 0.0 if nothing matches.

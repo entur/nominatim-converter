@@ -699,3 +699,66 @@ fn all_centroids_are_valid_coordinates() {
 
     cleanup(&output);
 }
+
+// ===== OSM entrance/gate enrichment =====
+
+/// Find the record whose `extra.id` ends with the given OSM id and return its centroid [lon, lat].
+fn centroid_for_osm_id(lines: &[serde_json::Value], osm_id: i64) -> Option<(f64, f64)> {
+    let suffix = format!(":{osm_id}");
+    lines.iter().skip(1).find_map(|entry| {
+        let content = &entry["content"][0];
+        let id = content["extra"]["id"].as_str()?;
+        if id.ends_with(&suffix) {
+            let c = content["centroid"].as_array()?;
+            Some((c[0].as_f64()?, c[1].as_f64()?))
+        } else {
+            None
+        }
+    })
+}
+
+#[test]
+fn osm_entrance_enrichment_substitutes_gate_for_containing_features() {
+    let output = temp_output("osm-entrance");
+    let config = test_data("converter-entrance.json");
+    let (success, _, stderr) = run_converter(&[
+        "osm",
+        "-i",
+        test_data("terningmoen.osm.pbf").to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+        "-c",
+        config.to_str().unwrap(),
+        "-f",
+    ]);
+    assert!(success, "osm conversion failed: {stderr}");
+
+    let lines = read_ndjson(&output);
+
+    // Both parcels that physically contain the gate are enriched to the lift_gate node
+    // (60.8750, 11.5600), NOT their polygon centroids. useEntrance applies per-feature, so the
+    // co-named fence (518127311) and landuse parcel (518428220) both get the gate.
+    for id in [518127311, 518428220] {
+        let (lon, lat) = centroid_for_osm_id(&lines, id)
+            .unwrap_or_else(|| panic!("feature {id} should be present"));
+        assert!((lon - 11.5600).abs() < 1e-4, "{id} lon should be the gate's, got {lon}");
+        assert!((lat - 60.8750).abs() < 1e-4, "{id} lat should be the gate's, got {lat}");
+    }
+
+    // A large area mapped as a multipolygon RELATION (9000001 "Terningmoen Skytefelt") is enriched
+    // to its own gate node (60.9050, 11.5200), proving relation features are handled too.
+    let (rlon, rlat) = centroid_for_osm_id(&lines, 9000001)
+        .expect("relation 9000001 should be present");
+    assert!((rlon - 11.5200).abs() < 1e-4, "relation lon should be the gate's, got {rlon}");
+    assert!((rlat - 60.9050).abs() < 1e-4, "relation lat should be the gate's, got {rlat}");
+
+    // The co-named outer parcel 50537344 does NOT contain the gate, so it keeps its own polygon
+    // centroid (~60.862, 11.524) -- features without a gate are emitted unchanged.
+    let (lon2, lat2) = centroid_for_osm_id(&lines, 50537344)
+        .expect("parcel 50537344 should still be present (only useEntrance, no drop)");
+    assert!((lon2 - 11.5240).abs() < 1e-3, "parcel 50537344 should keep its centroid, got {lon2}");
+    assert!((lat2 - 60.8620).abs() < 1e-3, "parcel 50537344 should keep its centroid, got {lat2}");
+    assert!((lon2 - 11.5600).abs() > 1e-3, "parcel 50537344 must not be moved to the gate");
+
+    cleanup(&output);
+}
