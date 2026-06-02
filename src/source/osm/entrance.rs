@@ -11,13 +11,14 @@
 //!
 //! ## Per-feature selection
 //! Each eligible feature looks at the entrance candidate nodes among its own perimeter and picks
-//! one by this priority (see [`select_entrance_for_feature`]):
+//! one by this priority (see [`select_entrance_for_feature`]). Pedestrian access is preferred
+//! throughout, since most arrivals here are on foot / via transit:
 //! 1. an explicit `*=main` marker (`routing:entrance=main` or `entrance=main`)
-//! 2. a pedestrian `entrance=*` / `routing:entrance=*` node (preferred over a vehicle gate, since
-//!    most arrivals are on foot / via transit)
-//! 3. a `barrier=*` gate node
-//! 4. a routable gate (member of a `highway=*` way)
-//! 5. the gate on the most major road
+//! 2. a public pedestrian `entrance=*` (any allowed value except `service`) / `routing:entrance=*`
+//! 3. a pedestrian barrier crossing (`barrier=stile`/`turnstile`/...)
+//! 4. a vehicle gate / control passable on foot (`barrier=gate`/`bollard`/`cattle_grid`/...)
+//! 5. a `service` (staff/delivery) `entrance=*`, demoted below real gates
+//! 6. a routable gate (member of a `highway=*` way), then the gate on the most major road
 //!
 //! Ties are broken by the smaller node id, for determinism.
 //!
@@ -59,29 +60,70 @@ pub(crate) struct EntrancePoint {
     pub(crate) coord: Coordinate,
 }
 
-/// Barrier values that represent a passable entry point (a gate), not a solid enclosure.
-const GATE_BARRIERS: &[&str] = &[
-    "gate",
-    "lift_gate",
-    "swing_gate",
-    "bollard",
-    "cycle_barrier",
+/// Barrier values that exist specifically for people on foot to cross a boundary. The strongest
+/// barrier signal for a public-transport geocoder, where the arrival point should be where a
+/// pedestrian actually enters: ranked above vehicle barriers by [`select_entrance_for_feature`].
+const PEDESTRIAN_BARRIERS: &[&str] = &[
+    "stile",
     "kissing_gate",
+    "wicket_gate",
+    "turnstile",
+    "full-height_turnstile",
+];
+
+/// Barrier values that are primarily vehicle gates / vehicle-control points but are passable on
+/// foot. They mark where a way crosses the perimeter, so they are a usable arrival point, but a
+/// weaker signal than a dedicated pedestrian crossing -- ranked below [`PEDESTRIAN_BARRIERS`].
+/// Deliberately excluded: `toll_booth`/`border_control` (a payment/crossing point on a
+/// through-road, not an entrance to a destination), `sally_port` (secure, non-public),
+/// `bus_trap`/`sump_buster`/`height_restrictor` (vehicle filters, not passages), and solid
+/// enclosures like `wall`/`fence`/`hedge`.
+const VEHICLE_BARRIERS: &[&str] = &[
+    "gate",
+    "sliding_gate",
+    "slide_gate",
+    "swing_gate",
+    "lift_gate",
+    "bollard",
     "block",
     "chain",
+    "cycle_barrier",
+    "cattle_grid",
+];
+
+/// True if `barrier` is a passable entry point we treat as a candidate (either tier).
+fn is_gate_barrier(barrier: &str) -> bool {
+    PEDESTRIAN_BARRIERS.contains(&barrier) || VEHICLE_BARRIERS.contains(&barrier)
+}
+
+/// Entrance values accepted as a public arrival point reachable on foot. An allowlist, so unknown
+/// or new values default to *not* a candidate. Deliberately excluded: `garage`/`parking`/`car_wash`
+/// (vehicle), `emergency` (emergency-only), `exit` (one-way egress, "not an entrance" per the wiki),
+/// and `no` (the negation).
+const ARRIVAL_ENTRANCES: &[&str] = &[
+    "yes",
+    "main",
+    "secondary",
+    "service",
+    "shop",
+    "restaurant",
+    "home",
+    "staircase",
+    "entrance",
 ];
 
 /// Classify a node by its tags. Returns `Some` if it is a candidate entrance/gate node.
-/// `entrance=no` is the explicit negation of an entrance and is never a candidate on its own.
 pub(crate) fn is_entrance_candidate(tags: &HashMap<&str, &str>) -> Option<EntranceNodeTags> {
     let entrance = tags
         .get("entrance")
-        .filter(|v| **v != "no")
+        .filter(|v| ARRIVAL_ENTRANCES.contains(v))
         .map(|s| s.to_string());
+    // `routing:entrance` is an explicit routing directive, so any value is accepted -- unlike the
+    // crowd-sourced `entrance`, which is allowlisted above.
     let routing_entrance = tags.get("routing:entrance").map(|s| s.to_string());
     let barrier = tags
         .get("barrier")
-        .filter(|v| GATE_BARRIERS.contains(v))
+        .filter(|v| is_gate_barrier(v))
         .map(|s| s.to_string());
 
     if entrance.is_some() || routing_entrance.is_some() || barrier.is_some() {
@@ -125,23 +167,38 @@ pub(crate) fn select_entrance_for_feature(
         .filter_map(|&nid| {
             let node_tags = data.tags.get(&nid)?;
             let &coord = data.coords.get(&nid)?;
-            // Ranking key (higher is better): an explicit "main" marker, then a pedestrian
-            // entrance node (entrance=*/routing:entrance=*) over a vehicle barrier gate, then a
-            // barrier=* gate, then routable (on a highway), then the most major road. Pedestrian
-            // entrances are preferred because most arrivals here are on foot / via transit.
+            // Ranking key (higher is better), tuned for an on-foot / transit arrival:
+            //   1. an explicit "main" marker (`routing:entrance=main` / `entrance=main`)
+            //   2. a public pedestrian entrance (`entrance=*` except `service`, or any
+            //      `routing:entrance=*`)
+            //   3. a pedestrian barrier crossing (stile, turnstile, ...)
+            //   4. a vehicle gate / control passable on foot (gate, bollard, cattle_grid, ...)
+            //   5. a `service` (staff/delivery) entrance -- demoted below real gates
+            //   6. routable (on a highway), then the most major road
+            let entrance = node_tags.entrance.as_deref();
             let is_main = node_tags.routing_entrance.as_deref() == Some("main")
-                || node_tags.entrance.as_deref() == Some("main");
-            let is_pedestrian_entrance =
-                node_tags.entrance.is_some() || node_tags.routing_entrance.is_some();
-            let is_barrier_gate = node_tags.barrier.is_some();
+                || entrance == Some("main");
+            let is_service_entrance = entrance == Some("service");
+            let is_public_entrance = node_tags.routing_entrance.is_some()
+                || (entrance.is_some() && !is_service_entrance);
+            let is_pedestrian_barrier = node_tags
+                .barrier
+                .as_deref()
+                .is_some_and(|b| PEDESTRIAN_BARRIERS.contains(&b));
+            let is_vehicle_barrier = node_tags
+                .barrier
+                .as_deref()
+                .is_some_and(|b| VEHICLE_BARRIERS.contains(&b));
             let routable = is_routable(nid, data);
             let road_pref = highway_majorness(nid, data)
                 .map(|m| (HIGHWAY_TYPES.len() - m) as i64)
                 .unwrap_or(0);
             let score = (
                 u8::from(is_main),
-                u8::from(is_pedestrian_entrance),
-                u8::from(is_barrier_gate),
+                u8::from(is_public_entrance),
+                u8::from(is_pedestrian_barrier),
+                u8::from(is_vehicle_barrier),
+                u8::from(is_service_entrance),
                 u8::from(routable),
                 road_pref,
             );
@@ -244,6 +301,42 @@ mod tests {
     }
 
     #[test]
+    fn pedestrian_barrier_beats_vehicle_barrier() {
+        let mut data = EntranceData::default();
+        let stile = 1_i64; // pedestrian crossing, not on a road
+        let gate = 2_i64; // vehicle gate, on a road
+        data.coords.insert(stile, coord(60.0, 11.0));
+        data.coords.insert(gate, coord(60.1, 11.1));
+        data.tags.insert(stile, EntranceNodeTags { barrier: Some("stile".into()), ..Default::default() });
+        data.tags.insert(gate, EntranceNodeTags { barrier: Some("gate".into()), ..Default::default() });
+        // The vehicle gate is even routable, but the pedestrian crossing must still win.
+        data.highway_ways.insert(600, "service".into());
+        data.node_highways.insert(gate, vec![600]);
+
+        let ep = select_entrance_for_feature(&[stile, gate], &data).unwrap();
+        assert_eq!(ep.node_id, stile);
+    }
+
+    #[test]
+    fn service_entrance_is_demoted_below_barrier_gate() {
+        let mut data = EntranceData::default();
+        let service = 1_i64; // staff/delivery back entrance
+        let gate = 2_i64; // public vehicle gate
+        data.coords.insert(service, coord(60.0, 11.0));
+        data.coords.insert(gate, coord(60.1, 11.1));
+        data.tags.insert(service, EntranceNodeTags { entrance: Some("service".into()), ..Default::default() });
+        data.tags.insert(gate, EntranceNodeTags { barrier: Some("gate".into()), ..Default::default() });
+
+        // A staff entrance is a worse public arrival point than the real gate.
+        let ep = select_entrance_for_feature(&[service, gate], &data).unwrap();
+        assert_eq!(ep.node_id, gate);
+        // ...but a non-service public entrance still beats the gate.
+        data.tags.insert(service, EntranceNodeTags { entrance: Some("yes".into()), ..Default::default() });
+        let ep = select_entrance_for_feature(&[service, gate], &data).unwrap();
+        assert_eq!(ep.node_id, service);
+    }
+
+    #[test]
     fn routable_gate_beats_non_routable_when_no_main() {
         let mut data = EntranceData::default();
         let routable = 1_i64;
@@ -264,12 +357,27 @@ mod tests {
         assert!(is_entrance_candidate(&HashMap::from([("barrier", "lift_gate")])).is_some());
         assert!(is_entrance_candidate(&HashMap::from([("entrance", "main")])).is_some());
         assert!(is_entrance_candidate(&HashMap::from([("routing:entrance", "main")])).is_some());
+        // Pedestrian crossings and gate variants are candidates.
+        assert!(is_entrance_candidate(&HashMap::from([("barrier", "stile")])).is_some());
+        assert!(is_entrance_candidate(&HashMap::from([("barrier", "turnstile")])).is_some());
+        assert!(is_entrance_candidate(&HashMap::from([("barrier", "cattle_grid")])).is_some());
         // barrier=wall is a solid enclosure, not a passable gate.
         assert!(is_entrance_candidate(&HashMap::from([("barrier", "wall")])).is_none());
-        // entrance=no is the negation of an entrance.
+        // toll_booth / border_control are points on a through-road, not feature entrances.
+        assert!(is_entrance_candidate(&HashMap::from([("barrier", "toll_booth")])).is_none());
+        assert!(is_entrance_candidate(&HashMap::from([("barrier", "border_control")])).is_none());
+        // Entrances are an allowlist: no/garage/emergency/exit aren't public arrival points on
+        // foot, and an unknown value defaults to rejected.
         assert!(is_entrance_candidate(&HashMap::from([("entrance", "no")])).is_none());
+        assert!(is_entrance_candidate(&HashMap::from([("entrance", "garage")])).is_none());
+        assert!(is_entrance_candidate(&HashMap::from([("entrance", "emergency")])).is_none());
+        assert!(is_entrance_candidate(&HashMap::from([("entrance", "exit")])).is_none());
+        assert!(is_entrance_candidate(&HashMap::from([("entrance", "something_new")])).is_none());
         // ...unless an independent gate tag is also present.
         assert!(is_entrance_candidate(&HashMap::from([("entrance", "no"), ("barrier", "gate")])).is_some());
+        // Genuine pedestrian entrances are kept.
+        assert!(is_entrance_candidate(&HashMap::from([("entrance", "service")])).is_some());
+        assert!(is_entrance_candidate(&HashMap::from([("entrance", "staircase")])).is_some());
         assert!(is_entrance_candidate(&HashMap::from([("amenity", "cafe")])).is_none());
     }
 
