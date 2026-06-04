@@ -454,7 +454,7 @@ pub(crate) fn convert_gosp(
         .filter_map(|r| stop_by_id.get(r.ref_.as_str()).copied())
         .filter_map(|sp| sp.centroid.as_ref())
         .map(|c| Coordinate::new(c.location.latitude, c.location.longitude))
-        .chain(std::iter::once(coord.clone()))
+        .chain(std::iter::once(coord))
         .fold(vec![f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY], |acc, c| {
             vec![acc[0].min(c.lon), acc[1].min(c.lat), acc[2].max(c.lon), acc[3].max(c.lat)]
         });
