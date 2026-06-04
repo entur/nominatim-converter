@@ -247,6 +247,8 @@ fn build_stop_categories(
     let mut indexed_cats = visible_cats.clone();
     for t in inferred_types {
         indexed_cats.push(format!("{LEGACY_CATEGORY_PREFIX}{t}"));
+        // First-class facet for v3's stopPlaceTypes filter; legacy.category.* stays for v2.
+        indexed_cats.push(format!("{STOP_PLACE_TYPE_PREFIX}{t}"));
     }
     indexed_cats.push(format!("{SOURCE_NSR}.{}", match role {
         StopPlaceRole::Child => "child",
@@ -725,6 +727,19 @@ mod tests {
     }
 
     #[test]
+    fn stop_place_types_indexed_as_first_class_facet() {
+        let config = test_config();
+        let importance_calc = ImportanceCalculator::new(&config.importance, &EMPTY_USAGE);
+        let sp = make_stop_place("NSR:StopPlace:1", "Test", Some("rail"), Some("railStation"));
+        let result = convert_stop_place(
+            &config, &importance_calc, &sp, &HashMap::new(), &HashMap::new(),
+            &HashMap::new(), 50, &[], &[],
+        ).unwrap();
+        let cats = &result.content[0].categories;
+        assert!(cats.iter().any(|c| c == "stop_place_type.railStation"), "{cats:?}");
+    }
+
+    #[test]
     fn parent_stop_includes_child_types_and_multimodal_category() {
         let config = test_config();
         let importance_calc = ImportanceCalculator::new(&config.importance, &EMPTY_USAGE);
@@ -741,6 +756,10 @@ mod tests {
         assert!(cats.iter().any(|c| c == "legacy.category.onstreetBus"));
         assert!(cats.iter().any(|c| c == "legacy.category.railStation"));
         assert!(cats.iter().any(|c| c == "legacy.category.metroStation"));
+        // Child types also land in the v3 facet, so a multimodal parent hub
+        // matches stopPlaceTypes filters for its children's types.
+        assert!(cats.iter().any(|c| c == "stop_place_type.railStation"));
+        assert!(cats.iter().any(|c| c == "stop_place_type.metroStation"));
         assert!(cats.iter().any(|c| c == "multimodal.parent"));
     }
 

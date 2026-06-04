@@ -41,6 +41,7 @@ pub const FARE_ZONE_ID_PREFIX: &str = "fare_zone_id.";
 pub const FARE_ZONE_AUTH_PREFIX: &str = "fare_zone_authority.";
 pub const COUNTY_ID_PREFIX: &str = "county_gid.";
 pub const LOCALITY_ID_PREFIX: &str = "locality_gid.";
+pub const STOP_PLACE_TYPE_PREFIX: &str = "stop_place_type.";
 pub const LEGACY_CATEGORY_PREFIX: &str = "legacy.category.";
 
 // Legacy compatibility tags carried over from the original converter
