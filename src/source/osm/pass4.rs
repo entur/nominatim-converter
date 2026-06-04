@@ -228,11 +228,43 @@ pub(crate) struct EntranceOverrides {
     pub(crate) rel_points: HashMap<i64, EntrancePoint>,
 }
 
+/// Ties whose top candidates all sit within this distance of each other are ignored: co-located
+/// duplicate nodes make the pick immaterial, and counting them would drag the spread statistics
+/// toward zero.
+const TIE_MIN_SPREAD_METERS: f64 = 1.0;
+
+/// How many of the widest ties to name in the coverage log, so the worst cases can be eyeballed.
+const TIE_LOG_WORST: usize = 5;
+
 #[derive(Default)]
 struct CoverageStats {
     eligible: usize,
     below_threshold: usize,
+    /// Selections made (an entrance was substituted); the denominator for the tie rate.
+    selections: usize,
     distances: Vec<f64>,
+    /// Features where >= 2 candidates more than [`TIE_MIN_SPREAD_METERS`] apart shared the
+    /// winning score, as (feature ref, max pairwise spread in m). Collected to decide from real
+    /// data whether far-apart ties should fall back to the centroid.
+    ties: Vec<(String, f64)>,
+}
+
+/// Record tie statistics for one selection: a tie means the winner was an arbitrary pick among
+/// equally-ranked gates. `feature` identifies the feature ("way/123") so the worst cases can be
+/// looked up.
+fn record_tie(stats: &mut CoverageStats, feature: String, sel: &entrance::SelectedEntrance) {
+    if sel.tied.len() < 2 {
+        return;
+    }
+    let mut spread = 0.0_f64;
+    for (i, a) in sel.tied.iter().enumerate() {
+        for b in &sel.tied[i + 1..] {
+            spread = spread.max(meters_between(a, b));
+        }
+    }
+    if spread >= TIE_MIN_SPREAD_METERS {
+        stats.ties.push((feature, spread));
+    }
 }
 
 /// For each large-area POI feature (way or multipolygon relation) whose matched filter sets
@@ -272,11 +304,13 @@ pub(crate) fn compute_entrance_overrides(
             continue;
         }
         stats.eligible += 1;
-        if let Some(ep) = entrance::select_entrance_for_feature(node_ids, entrance_data) {
+        if let Some(sel) = entrance::select_entrance_for_feature(node_ids, entrance_data) {
+            stats.selections += 1;
             if let Some(centroid) = way_centroids.get(way_id) {
-                stats.distances.push(meters_between(&centroid, &ep.coord));
+                stats.distances.push(meters_between(&centroid, &sel.point.coord));
             }
-            o.way_points.insert(way_id, ep);
+            record_tie(&mut stats, format!("way/{way_id}"), &sel);
+            o.way_points.insert(way_id, sel.point);
         }
     }
 
@@ -294,11 +328,13 @@ pub(crate) fn compute_entrance_overrides(
             continue;
         }
         stats.eligible += 1;
-        if let Some(ep) = entrance::select_entrance_for_feature(&perimeter, entrance_data) {
+        if let Some(sel) = entrance::select_entrance_for_feature(&perimeter, entrance_data) {
+            stats.selections += 1;
             if let Some(centroid) = relation_centroid(rel_id, rel_data, nodes_coords, way_centroids) {
-                stats.distances.push(meters_between(&centroid, &ep.coord));
+                stats.distances.push(meters_between(&centroid, &sel.point.coord));
             }
-            o.rel_points.insert(rel_id, ep);
+            record_tie(&mut stats, format!("relation/{rel_id}"), &sel);
+            o.rel_points.insert(rel_id, sel.point);
         }
     }
 
@@ -379,9 +415,17 @@ fn meters_between(a: &Coordinate, b: &Coordinate) -> f64 {
     (dx * dx + dy * dy).sqrt()
 }
 
+/// The `p`-quantile of an ascending-sorted slice (nearest-rank), or 0 for an empty slice.
+fn percentile(sorted: &[f64], p: f64) -> f64 {
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    let idx = ((sorted.len() as f64 - 1.0) * p).round() as usize;
+    sorted[idx]
+}
+
 fn log_coverage(stats: &mut CoverageStats) {
-    let CoverageStats { eligible, below_threshold, distances } = stats;
-    let enriched = distances.len();
+    let CoverageStats { eligible, below_threshold, selections, distances, ties } = stats;
     if *eligible == 0 {
         eprintln!(
             "  Entrance enrichment: no eligible large-area features (>= {MIN_AREA_SIZE_METERS:.0} m); \
@@ -390,25 +434,40 @@ fn log_coverage(stats: &mut CoverageStats) {
         return;
     }
     distances.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let pct = |p: f64| -> f64 {
-        if distances.is_empty() {
-            return 0.0;
-        }
-        let idx = ((distances.len() as f64 - 1.0) * p).round() as usize;
-        distances[idx]
-    };
     eprintln!(
         "  Entrance enrichment: {eligible} eligible features (>= {MIN_AREA_SIZE_METERS:.0} m, \
-         {below_threshold} more below threshold); {enriched} centroid->entrance substitutions"
+         {below_threshold} more below threshold); {selections} centroid->entrance substitutions"
     );
-    if enriched > 0 {
+    if !distances.is_empty() {
         eprintln!(
             "    centroid->entrance distance (m): min={:.0} median={:.0} p90={:.0} max={:.0}",
             distances.first().copied().unwrap_or(0.0),
-            pct(0.5),
-            pct(0.9),
+            percentile(distances, 0.5),
+            percentile(distances, 0.9),
             distances.last().copied().unwrap_or(0.0),
         );
+    }
+    if !ties.is_empty() {
+        // An arbitrary pick among far-apart gates is the case a centroid fallback would address;
+        // these numbers tell us how often that actually happens and which features to eyeball.
+        ties.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        let spreads: Vec<f64> = ties.iter().map(|(_, s)| *s).collect();
+        eprintln!(
+            "    {} of {selections} selections had >= 2 equally-ranked top candidates more than \
+             {TIE_MIN_SPREAD_METERS:.0} m apart (arbitrary pick); spread (m): median={:.0} \
+             p90={:.0} max={:.0}",
+            ties.len(),
+            percentile(&spreads, 0.5),
+            percentile(&spreads, 0.9),
+            spreads.last().copied().unwrap_or(0.0),
+        );
+        let worst: Vec<String> = ties
+            .iter()
+            .rev()
+            .take(TIE_LOG_WORST)
+            .map(|(feature, spread)| format!("{feature} ({spread:.0} m)"))
+            .collect();
+        eprintln!("      widest ties: {}", worst.join(", "));
     }
 }
 
@@ -520,4 +579,58 @@ fn is_poi_entity(
         && tags
             .iter()
             .any(|(k, v)| popularity_calculator.has_filter(k, v))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::entrance::{EntrancePoint, SelectedEntrance};
+
+    fn coord(lat: f64, lon: f64) -> Coordinate {
+        Coordinate { lat, lon }
+    }
+
+    fn selection(tied: Vec<Coordinate>) -> SelectedEntrance {
+        SelectedEntrance { point: EntrancePoint { node_id: 1, coord: tied[0] }, tied }
+    }
+
+    #[test]
+    fn record_tie_ignores_single_winner_and_colocated_ties() {
+        let mut stats = CoverageStats::default();
+        // A clear winner is not a tie.
+        record_tie(&mut stats, "way/1".into(), &selection(vec![coord(60.0, 11.0)]));
+        // Two nodes ~0.06 m apart: the pick is immaterial, not a tie worth tracking.
+        record_tie(
+            &mut stats,
+            "way/2".into(),
+            &selection(vec![coord(60.0, 11.0), coord(60.0, 11.000001)]),
+        );
+        assert!(stats.ties.is_empty());
+    }
+
+    #[test]
+    fn record_tie_tracks_max_pairwise_spread() {
+        let mut stats = CoverageStats::default();
+        // 0.001 deg latitude is ~111 m; the max pairwise distance is a<->c, ~222 m.
+        record_tie(
+            &mut stats,
+            "way/3".into(),
+            &selection(vec![coord(60.0, 11.0), coord(60.001, 11.0), coord(60.002, 11.0)]),
+        );
+        assert_eq!(stats.ties.len(), 1);
+        let (feature, spread) = &stats.ties[0];
+        assert_eq!(feature, "way/3");
+        assert!((215.0..=230.0).contains(spread), "expected ~222 m, got {spread}");
+    }
+
+    #[test]
+    fn percentile_handles_empty_single_and_known_vectors() {
+        assert_eq!(percentile(&[], 0.5), 0.0);
+        assert_eq!(percentile(&[42.0], 0.5), 42.0);
+        let v = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0];
+        assert_eq!(percentile(&v, 0.0), 1.0);
+        assert_eq!(percentile(&v, 0.5), 6.0); // nearest-rank: round(4.5) = 5 -> v[5]
+        assert_eq!(percentile(&v, 0.9), 9.0); // round(8.1) = 8 -> v[8]
+        assert_eq!(percentile(&v, 1.0), 10.0);
+    }
 }
