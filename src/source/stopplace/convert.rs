@@ -444,6 +444,19 @@ pub(crate) fn convert_gosp(
         .unwrap_or_default();
     dedup_preserve_order(&mut member_names);
 
+    // Real extent over the member stops' coordinates (plus the group's own
+    // centroid). Photon serves it as a per-feature `extent`; zero-area boxes
+    // (no resolvable members) are skipped at index time.
+    let bbox = gosp.members.as_ref()
+        .map(|m| m.refs.as_slice()).unwrap_or_default().iter()
+        .filter_map(|r| stop_by_id.get(r.ref_.as_str()).copied())
+        .filter_map(|sp| sp.centroid.as_ref())
+        .map(|c| Coordinate::new(c.location.latitude, c.location.longitude))
+        .chain(std::iter::once(coord.clone()))
+        .fold(vec![f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY], |acc, c| {
+            vec![acc[0].min(c.lon), acc[1].min(c.lat), acc[2].max(c.lon), acc[3].max(c.lat)]
+        });
+
     Some(NominatimPlace {
         type_: "Place".to_string(),
         content: vec![PlaceContent {
@@ -464,7 +477,7 @@ pub(crate) fn convert_gosp(
             postcode: None,
             country_code: Some(country.name.clone()),
             centroid: coord.centroid(),
-            bbox: coord.bbox(),
+            bbox,
             extra: Extra {
                 id: Some(gosp.id.clone()),
                 source: Some("nsr".to_string()),
@@ -792,6 +805,41 @@ mod tests {
         assert!(alt_name.contains("Oslo S"), "alt_name should include member 'Oslo S': {alt_name}");
         assert!(alt_name.contains("Oslo Bussterminal"), "alt_name should include member 'Oslo Bussterminal': {alt_name}");
         assert!(!alt_name.contains("NSR:GroupOfStopPlaces:1"), "alt_name must not contain the GoSP id: {alt_name}");
+    }
+
+    #[test]
+    fn gosp_bbox_spans_member_stops() {
+        let config = test_config();
+        let importance_calc = ImportanceCalculator::new(&config.importance, &EMPTY_USAGE);
+
+        let mut west = make_stop_place("NSR:StopPlace:1", "West", Some("bus"), None);
+        west.centroid = Some(CentroidXml { location: LocationXml { longitude: 10.70, latitude: 59.90 } });
+        let mut east = make_stop_place("NSR:StopPlace:2", "East", Some("bus"), None);
+        east.centroid = Some(CentroidXml { location: LocationXml { longitude: 10.80, latitude: 59.95 } });
+        let stop_by_id: HashMap<&str, &StopPlaceXml> = HashMap::from([
+            ("NSR:StopPlace:1", &west),
+            ("NSR:StopPlace:2", &east),
+        ]);
+
+        let gosp = GroupOfStopPlacesXml {
+            id: "NSR:GroupOfStopPlaces:9".to_string(),
+            name: Some("Testby".to_string()),
+            centroid: Some(CentroidXml { location: LocationXml { longitude: 10.75, latitude: 59.92 } }),
+            members: Some(MembersXml {
+                refs: vec![
+                    RefAttr { ref_: "NSR:StopPlace:1".to_string() },
+                    RefAttr { ref_: "NSR:StopPlace:2".to_string() },
+                ],
+            }),
+        };
+
+        let result = convert_gosp(
+            &config, &importance_calc, &gosp, &HashMap::new(),
+            &HashMap::new(), &stop_by_id, false,
+        ).unwrap();
+
+        let bbox = &result.content[0].bbox;
+        assert_eq!(bbox, &vec![10.70, 59.90, 10.80, 59.95], "bbox must span the member stops");
     }
 
     #[test]

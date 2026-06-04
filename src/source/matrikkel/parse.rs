@@ -21,11 +21,16 @@ pub(crate) struct MatrikkelAdresse {
 }
 
 /// Running aggregation for a street: accumulates UTM33 coordinates across all addresses
-/// on the same street so we can compute an average centroid for the street entry.
+/// on the same street so we can compute an average centroid and a bounding box for
+/// the street entry.
 pub(crate) struct StreetAgg {
     pub representative: MatrikkelAdresse,
     pub sum_ost: f64,
     pub sum_nord: f64,
+    pub min_ost: f64,
+    pub max_ost: f64,
+    pub min_nord: f64,
+    pub max_nord: f64,
     pub count: usize,
 }
 

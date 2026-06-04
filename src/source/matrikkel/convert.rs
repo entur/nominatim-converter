@@ -52,19 +52,24 @@ pub fn convert_all(
             let key = (name.clone(), addr.kommunenummer.clone().unwrap_or_default());
             let agg = street_groups.entry(key).or_insert_with(|| StreetAgg {
                 representative: addr.clone(),
-                sum_ost: 0.0, sum_nord: 0.0, count: 0,
+                sum_ost: 0.0, sum_nord: 0.0,
+                min_ost: f64::INFINITY, max_ost: f64::NEG_INFINITY,
+                min_nord: f64::INFINITY, max_nord: f64::NEG_INFINITY,
+                count: 0,
             });
             agg.sum_ost += addr.ost;
             agg.sum_nord += addr.nord;
+            agg.min_ost = agg.min_ost.min(addr.ost);
+            agg.max_ost = agg.max_ost.max(addr.ost);
+            agg.min_nord = agg.min_nord.min(addr.nord);
+            agg.max_nord = agg.max_nord.max(addr.nord);
             agg.count += 1;
         }
     }
 
     // Pass 2: stream streets to output
     for agg in street_groups.values() {
-        let avg_ost = agg.sum_ost / agg.count as f64;
-        let avg_nord = agg.sum_nord / agg.count as f64;
-        let place = convert_street(&agg.representative, avg_ost, avg_nord, config, &importance_calc, &kommune_mapping);
+        let place = convert_street(agg, config, &importance_calc, &kommune_mapping);
         writer.write_entry(&place)?;
     }
 
@@ -153,15 +158,26 @@ fn convert_address(
 }
 
 fn convert_street(
-    addr: &MatrikkelAdresse,
-    avg_ost: f64,
-    avg_nord: f64,
+    agg: &StreetAgg,
     config: &Config,
     importance_calc: &ImportanceCalculator,
     kommune_mapping: &HashMap<String, KommuneInfo>,
 ) -> NominatimPlace {
-    let coord = geo::convert_utm33_to_lat_lon(avg_ost, avg_nord);
+    let addr = &agg.representative;
+    let coord = geo::convert_utm33_to_lat_lon(agg.sum_ost / agg.count as f64, agg.sum_nord / agg.count as f64);
     let country = geo::get_country(&coord).unwrap_or_else(Country::no);
+    // Real extent over the street's address points (Photon serves it as a
+    // per-feature `extent`; zero-area boxes from single-address streets are
+    // skipped at index time). Only the SW/NE diagonal is converted from UTM;
+    // grid rotation (meridian convergence) means the true geographic extent can
+    // exceed this box slightly - negligible at street scale, an exact extent
+    // would need all four corners.
+    let sw = geo::convert_utm33_to_lat_lon(agg.min_ost, agg.min_nord);
+    let ne = geo::convert_utm33_to_lat_lon(agg.max_ost, agg.max_nord);
+    let bbox = vec![
+        sw.lon.min(ne.lon), sw.lat.min(ne.lat),
+        sw.lon.max(ne.lon), sw.lat.max(ne.lat),
+    ];
     let street_name = addr.adressenavn.as_deref().unwrap_or("");
     let id = format!("KVE:TopographicPlace:{}-{street_name}", addr.kommunenummer.as_deref().unwrap_or(""));
 
@@ -213,7 +229,7 @@ fn convert_street(
             postcode: None,
             country_code: Some(country.name.clone()),
             centroid: coord.centroid(),
-            bbox: coord.bbox(),
+            bbox,
             extra: Extra {
                 id: Some(id.clone()),
                 source: Some("kartverket-matrikkelenadresse".to_string()),
@@ -305,6 +321,27 @@ mod tests {
             .filter(|l| l.contains(&format!("\"{LAYER_STREET}\""))).collect();
         assert!(!address_entries.is_empty(), "Should have address entries");
         assert!(!street_entries.is_empty(), "Should have street entries");
+    }
+
+    #[test]
+    fn multi_address_streets_get_a_real_extent() {
+        let lines = convert_and_read("street_bbox", None);
+        // At least one street with more than one address must have a non-degenerate
+        // bbox [minLon, minLat, maxLon, maxLat] that contains its centroid.
+        let with_extent = lines.iter()
+            .filter(|l| l.contains(&format!("\"{LAYER_STREET}\"")))
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .find(|place| {
+                let bbox = &place["content"][0]["bbox"];
+                bbox.is_array() && bbox[0].as_f64() < bbox[2].as_f64()
+            })
+            .expect("at least one street should have a non-degenerate bbox");
+        let content = &with_extent["content"][0];
+        let bbox: Vec<f64> = content["bbox"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+        let centroid: Vec<f64> = content["centroid"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+        assert!(bbox[1] < bbox[3], "minLat < maxLat: {bbox:?}");
+        assert!(bbox[0] <= centroid[0] && centroid[0] <= bbox[2], "centroid lon inside bbox");
+        assert!(bbox[1] <= centroid[1] && centroid[1] <= bbox[3], "centroid lat inside bbox");
     }
 
     #[test]
