@@ -29,7 +29,7 @@ pub fn convert_all(
     is_appending: bool,
     stedsnavn_gml: Option<&Path>,
     usage: &UsageBoost,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<usize, Box<dyn std::error::Error>> {
     let importance_calc = ImportanceCalculator::new(&config.importance, usage);
     let kommune_mapping = if let Some(gml_path) = stedsnavn_gml {
         build_kommune_mapping(gml_path)?
@@ -73,7 +73,7 @@ pub fn convert_all(
         writer.write_entry(&place)?;
     }
 
-    Ok(())
+    Ok(writer.count())
 }
 
 fn convert_address(

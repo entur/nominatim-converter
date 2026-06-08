@@ -19,7 +19,7 @@ pub fn convert_all(
     output: &Path,
     is_appending: bool,
     usage: &UsageBoost,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<usize, Box<dyn std::error::Error>> {
     let xml = std::fs::read_to_string(input)?;
     let topo_places = parse_topographic_places(&xml)?;
     let now = Local::now().naive_local();
@@ -30,8 +30,8 @@ pub fn convert_all(
         .filter_map(|tp| convert_topo_place(config, &tp, usage))
         .collect();
 
-    JsonWriter::export(&entries, output, is_appending)?;
-    Ok(())
+    let count = JsonWriter::export(&entries, output, is_appending)?;
+    Ok(count)
 }
 
 /// Check if a POI is currently valid based on its ValidBetween date range.

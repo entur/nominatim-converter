@@ -53,7 +53,7 @@ impl OsmConverter {
         output: &Path,
         is_appending: bool,
         usage: &crate::common::usage::UsageBoost,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<usize, Box<dyn std::error::Error>> {
         assert!(input.exists(), "Input file does not exist: {:?}", input);
 
         let mut nodes_coords = CoordinateStore::new(500_000);
@@ -98,9 +98,9 @@ impl OsmConverter {
         )?;
 
         eprintln!("Finished processing {} entities", results.len());
-        JsonWriter::export(&results, output, is_appending)?;
+        let count = JsonWriter::export(&results, output, is_appending)?;
 
-        Ok(())
+        Ok(count)
     }
 
     /// Pass 1: Relations -- collect admin boundaries and POI relation member IDs.

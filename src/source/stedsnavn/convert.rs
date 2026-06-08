@@ -24,7 +24,7 @@ pub fn convert_all(
     output: &Path,
     is_appending: bool,
     usage: &UsageBoost,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<usize, Box<dyn std::error::Error>> {
     let importance_calc = ImportanceCalculator::new(&config.importance, usage);
     let mut writer = JsonWriter::open(output, is_appending)?;
 
@@ -49,7 +49,7 @@ pub fn convert_all(
         buf.clear();
     }
 
-    Ok(())
+    Ok(writer.count())
 }
 
 pub(crate) fn convert_to_nominatim(entry: &StedsnavnEntry, config: &Config, importance_calc: &ImportanceCalculator) -> NominatimPlace {

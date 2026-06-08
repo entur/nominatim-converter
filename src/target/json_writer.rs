@@ -6,6 +6,7 @@ use std::path::Path;
 
 pub struct JsonWriter {
     writer: BufWriter<File>,
+    count: usize,
 }
 
 impl JsonWriter {
@@ -40,27 +41,34 @@ impl JsonWriter {
             OpenOptions::new().create(true).append(true).open(output)?
         };
 
-        Ok(Self { writer: BufWriter::new(file) })
+        Ok(Self { writer: BufWriter::new(file), count: 0 })
     }
 
     /// Write a single entry to the output.
     pub fn write_entry(&mut self, entry: &NominatimPlace) -> Result<(), Box<dyn std::error::Error>> {
         serde_json::to_writer(&mut self.writer, entry)?;
         writeln!(self.writer)?;
+        self.count += 1;
         Ok(())
     }
 
+    /// Number of entries written through this writer (excludes the header line).
+    pub fn count(&self) -> usize {
+        self.count
+    }
+
     /// Batch export (convenience method used by non-OSM converters).
+    /// Returns the number of entries written.
     pub fn export(
         entries: &[NominatimPlace],
         output: &Path,
         is_appending: bool,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<usize, Box<dyn std::error::Error>> {
         let mut writer = Self::open(output, is_appending)?;
         for entry in entries {
             writer.write_entry(entry)?;
         }
-        Ok(())
+        Ok(writer.count())
     }
 }
 
@@ -103,7 +111,8 @@ mod tests {
         let path = dir.join("test.ndjson");
 
         let entries = vec![make_place("1","Oslo S"), make_place("2","Bergen")];
-        JsonWriter::export(&entries, &path, false).unwrap();
+        let written = JsonWriter::export(&entries, &path, false).unwrap();
+        assert_eq!(written, 2); // count excludes the header line
 
         let content = std::fs::read_to_string(&path).unwrap();
         let lines: Vec<&str> = content.lines().collect();
@@ -123,8 +132,9 @@ mod tests {
 
         // First write
         JsonWriter::export(&[make_place("1","Oslo")], &path, false).unwrap();
-        // Append
-        JsonWriter::export(&[make_place("2","Bergen")], &path, true).unwrap();
+        // Append: the returned count is this run's entries only, not the file total.
+        let appended = JsonWriter::export(&[make_place("2","Bergen")], &path, true).unwrap();
+        assert_eq!(appended, 1);
 
         let content = std::fs::read_to_string(&path).unwrap();
         let lines: Vec<&str> = content.lines().collect();

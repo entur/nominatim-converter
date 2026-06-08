@@ -128,6 +128,48 @@ fn stopplace_produces_valid_ndjson() {
 }
 
 #[test]
+fn min_lines_below_threshold_fails() {
+    let output = temp_output("min-lines-fail");
+    let (success, _, stderr) = run_converter(&[
+        "stopplace",
+        "-i",
+        test_data("stopPlaces.xml").to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+        "-c",
+        config_path().to_str().unwrap(),
+        "-f",
+        "--min-lines",
+        "1000000",
+    ]);
+    assert!(!success, "expected failure when output is below --min-lines");
+    assert!(
+        stderr.contains("below the minimum"),
+        "expected min-lines error in stderr: {stderr}"
+    );
+    cleanup(&output);
+}
+
+#[test]
+fn min_lines_met_succeeds() {
+    let output = temp_output("min-lines-ok");
+    let (success, _, stderr) = run_converter(&[
+        "stopplace",
+        "-i",
+        test_data("stopPlaces.xml").to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+        "-c",
+        config_path().to_str().unwrap(),
+        "-f",
+        "--min-lines",
+        "1",
+    ]);
+    assert!(success, "expected success when output meets --min-lines: {stderr}");
+    cleanup(&output);
+}
+
+#[test]
 fn stopplace_entries_have_required_fields() {
     let output = temp_output("stopplace-fields");
     let (success, _, stderr) = run_converter(&[

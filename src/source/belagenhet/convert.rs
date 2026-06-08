@@ -21,7 +21,7 @@ pub fn convert_all(
     output: &Path,
     is_appending: bool,
     usage: &UsageBoost,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<usize, Box<dyn std::error::Error>> {
     let importance_calc = ImportanceCalculator::new(&config.importance, usage);
 
     let all_addresses = parse_gpkg(input)?;
@@ -61,7 +61,7 @@ pub fn convert_all(
     }
 
     eprintln!("Converted {} addresses and {street_count} streets", all_addresses.len());
-    Ok(())
+    Ok(writer.count())
 }
 
 /// Format a Swedish county (län) code as a Nominatim GID.

@@ -8,6 +8,6 @@ pub fn convert(
     is_appending: bool,
     stedsnavn_gml: Option<&std::path::Path>,
     usage: &crate::common::usage::UsageBoost,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<usize, Box<dyn std::error::Error>> {
     convert::convert_all(config, input, output, is_appending, stedsnavn_gml, usage)
 }

@@ -76,6 +76,9 @@ struct ConvertArgs {
     /// Force overwrite if output file exists
     #[arg(short, long, default_value_t = false)]
     force: bool,
+    /// Abort if fewer than N entries are written (overrides the per-source config minLines).
+    #[arg(long = "min-lines", value_name = "N")]
+    min_lines: Option<usize>,
 }
 
 #[derive(Parser)]
@@ -101,6 +104,9 @@ struct BelagenhetArgs {
     /// Force overwrite if output file exists
     #[arg(short, long, default_value_t = false)]
     force: bool,
+    /// Abort if fewer than N entries are written (overrides the per-source config minLines).
+    #[arg(long = "min-lines", value_name = "N")]
+    min_lines: Option<usize>,
 }
 
 #[derive(Parser)]
@@ -126,6 +132,9 @@ struct StedsnavnArgs {
     /// Force overwrite if output file exists
     #[arg(short, long, default_value_t = false)]
     force: bool,
+    /// Abort if fewer than N entries are written (overrides the per-source config minLines).
+    #[arg(long = "min-lines", value_name = "N")]
+    min_lines: Option<usize>,
 }
 
 #[derive(Parser)]
@@ -157,6 +166,9 @@ struct MatrikkelArgs {
     /// Force overwrite if output file exists
     #[arg(short, long, default_value_t = false)]
     force: bool,
+    /// Abort if fewer than N entries are written (overrides the per-source config minLines).
+    #[arg(long = "min-lines", value_name = "N")]
+    min_lines: Option<usize>,
 }
 
 fn main() {
@@ -178,7 +190,7 @@ fn main() {
     let usage_csv = usage_csv.as_deref();
 
     let result = match action {
-        Action::Stopplace(args) => run_conversion("StopPlace", args, Some("*.xml"), &cache, usage_csv, |cfg, input, output, append, usage| {
+        Action::Stopplace(args) => run_conversion("StopPlace", args, Some("*.xml"), &cache, usage_csv, |cfg| cfg.stop_place.min_lines, |cfg, input, output, append, usage| {
             source::stopplace::convert(cfg, input, output, append, usage)
         }),
         Action::Matrikkel(args) => {
@@ -227,15 +239,16 @@ fn main() {
                 config: args.config,
                 append: args.append,
                 force: args.force,
+                min_lines: args.min_lines,
             };
 
             let gml_path = gml_resolved.as_ref().map(ResolvedInput::path);
-            run_conversion("Matrikkel", convert_args, Some("*.csv"), &cache, usage_csv, |cfg, input, output, append, usage| {
+            run_conversion("Matrikkel", convert_args, Some("*.csv"), &cache, usage_csv, |cfg| cfg.matrikkel.min_lines, |cfg, input, output, append, usage| {
                 source::matrikkel::convert(cfg, input, output, append, gml_path, usage)
             })
             // gml_resolved drops here; if temp, its file is cleaned up automatically.
         }
-        Action::Osm(args) => run_conversion("OSM PBF", args, None, &cache, usage_csv, |cfg, input, output, append, usage| {
+        Action::Osm(args) => run_conversion("OSM PBF", args, None, &cache, usage_csv, |cfg| cfg.osm.min_lines, |cfg, input, output, append, usage| {
             source::osm::convert(cfg, input, output, append, usage)
         }),
         Action::Stedsnavn(args) => {
@@ -261,12 +274,13 @@ fn main() {
                 config: args.config,
                 append: args.append,
                 force: args.force,
+                min_lines: args.min_lines,
             };
-            run_conversion("Stedsnavn", convert_args, Some("*.gml"), &cache, usage_csv, |cfg, input, output, append, usage| {
+            run_conversion("Stedsnavn", convert_args, Some("*.gml"), &cache, usage_csv, |cfg| cfg.stedsnavn.min_lines, |cfg, input, output, append, usage| {
                 source::stedsnavn::convert(cfg, input, output, append, usage)
             })
         }
-        Action::Poi(args) => run_conversion("POI", args, None, &cache, usage_csv, |cfg, input, output, append, usage| {
+        Action::Poi(args) => run_conversion("POI", args, None, &cache, usage_csv, |cfg| cfg.poi.min_lines, |cfg, input, output, append, usage| {
             source::poi::convert(cfg, input, output, append, usage)
         }),
         Action::Belagenhet(args) => {
@@ -297,8 +311,9 @@ fn main() {
                     config: args.config,
                     append: args.append,
                     force: args.force,
+                    min_lines: args.min_lines,
                 };
-                run_conversion("Belägenhetsadress", convert_args, Some("*.gpkg"), &cache, usage_csv, |cfg, input, output, append, usage| {
+                run_conversion("Belägenhetsadress", convert_args, Some("*.gpkg"), &cache, usage_csv, |cfg| cfg.belagenhet.min_lines, |cfg, input, output, append, usage| {
                     source::belagenhet::convert(cfg, input, output, append, usage)
                 })
             }
@@ -363,19 +378,42 @@ fn needs_belagenhet_credentials(cache: &CacheOptions, codes: &[String]) -> bool 
     })
 }
 
+/// Enforce the optional per-source minimum entry count. A conversion that writes fewer
+/// entries than the threshold is treated as a failure (e.g. an empty or truncated upstream
+/// download) so the import job aborts loudly instead of shipping a degraded index. On
+/// success with a threshold set, log a confirmation so operators can see the guard ran
+/// (a mistyped config key silently disables it). `None` means no check.
+fn check_min_lines(name: &str, output: &Path, written: usize, min_lines: Option<usize>) -> Result<(), Box<dyn std::error::Error>> {
+    match min_lines {
+        Some(min) if written < min => Err(format!(
+            "{name}: only {written} entries written, below the minimum of {min}. \
+             Output at {} may be incomplete -- do not import it.",
+            output.display()
+        ).into()),
+        Some(min) => {
+            eprintln!("{name}: min-lines check passed ({written} >= {min}).");
+            Ok(())
+        }
+        None => Ok(()),
+    }
+}
+
 fn run_conversion<F>(
     name: &str,
     args: ConvertArgs,
     extract_glob: Option<&str>,
     cache: &CacheOptions,
     usage_csv: Option<&Path>,
+    config_min: fn(&config::Config) -> Option<usize>,
     convert_fn: F,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
-    F: FnOnce(&config::Config, &Path, &Path, bool, &UsageBoost) -> Result<(), Box<dyn std::error::Error>>,
+    F: FnOnce(&config::Config, &Path, &Path, bool, &UsageBoost) -> Result<usize, Box<dyn std::error::Error>>,
 {
     let cfg = config::Config::load(args.config.as_deref())?;
     let usage = UsageBoost::load(usage_csv, &cfg.usage)?;
+    // CLI flag overrides the per-source config value; either may be absent (no check).
+    let min_lines = args.min_lines.or_else(|| config_min(&cfg));
 
     let output = &args.output;
     if output.exists() {
@@ -397,8 +435,10 @@ where
 
     eprintln!("Starting {name} conversion...");
     let start = Instant::now();
-    convert_fn(&cfg, input.path(), output, args.append, &usage)?;
+    let written = convert_fn(&cfg, input.path(), output, args.append, &usage)?;
     // `input` drops here; temp files are removed automatically.
+
+    check_min_lines(name, output, written, min_lines)?;
 
     let duration = start.elapsed().as_secs_f64();
     let size_mb = std::fs::metadata(output).map(|m| m.len() as f64 / (1024.0 * 1024.0)).unwrap_or(0.0);
@@ -432,16 +472,22 @@ fn run_belagenhet_download(
 
     let start = Instant::now();
     let mut is_first = !args.append;
+    let mut total_written = 0;
 
     for (i, kommun_id) in municipalities.iter().enumerate() {
         eprintln!("Processing municipality {kommun_id} ({}/{})...", i + 1, municipalities.len());
 
         let gpkg = source::belagenhet::download::download_municipality(kommun_id, cache)?;
         let appending = !is_first;
-        source::belagenhet::convert(&cfg, gpkg.path(), output, appending, &usage)?;
+        total_written += source::belagenhet::convert(&cfg, gpkg.path(), output, appending, &usage)?;
         // `gpkg` drops here; temp files cleaned up, cached files preserved.
         is_first = false;
     }
+
+    // The minimum applies to the whole run's total, not per municipality, so legitimately
+    // tiny municipalities don't trip it. CLI flag overrides the per-source config value.
+    let min_lines = args.min_lines.or(cfg.belagenhet.min_lines);
+    check_min_lines("Belägenhetsadress", output, total_written, min_lines)?;
 
     let duration = start.elapsed().as_secs_f64();
     let size_mb = std::fs::metadata(output).map(|m| m.len() as f64 / (1024.0 * 1024.0)).unwrap_or(0.0);
@@ -503,4 +549,24 @@ fn resolve_municipality_codes(args: &[String]) -> Vec<String> {
         }
     }
     codes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn min_lines_unset_always_passes() {
+        let out = Path::new("out.ndjson");
+        assert!(check_min_lines("X", out, 0, None).is_ok());
+    }
+
+    #[test]
+    fn min_lines_boundary() {
+        let out = Path::new("out.ndjson");
+        // Exactly meeting the threshold passes; one short fails. Guards against `<` vs `<=`.
+        assert!(check_min_lines("X", out, 10, Some(10)).is_ok());
+        assert!(check_min_lines("X", out, 9, Some(10)).is_err());
+        assert!(check_min_lines("X", out, 100, Some(10)).is_ok());
+    }
 }

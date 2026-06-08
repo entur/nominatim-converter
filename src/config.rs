@@ -18,6 +18,10 @@ pub struct Config {
     pub usage: UsageConfig,
 }
 
+// Each source config carries an optional `minLines` sanity threshold (see the `min_lines`
+// field on each *Config struct below): if a conversion writes fewer entries, it aborts.
+// Unset means no check; the `--min-lines` CLI flag overrides it per run.
+
 #[derive(Deserialize, Clone, Debug)]
 pub struct UsageConfig {
     #[serde(default = "default_usage_alpha")]
@@ -42,6 +46,8 @@ pub struct OsmConfig {
     #[serde(rename = "rankAddress")]
     pub rank_address: RankAddress,
     pub filters: Vec<PoiFilter>,
+    #[serde(rename = "minLines", default)]
+    pub min_lines: Option<usize>,
 }
 
 #[derive(Deserialize, Clone, Copy)]
@@ -70,6 +76,8 @@ pub struct StedsnavnConfig {
     pub default_value: f64,
     #[serde(rename = "rankAddress")]
     pub rank_address: i32,
+    #[serde(rename = "minLines", default)]
+    pub min_lines: Option<usize>,
 }
 
 #[derive(Deserialize, Clone)]
@@ -80,6 +88,8 @@ pub struct MatrikkelConfig {
     pub street_popularity: f64,
     #[serde(rename = "rankAddress")]
     pub rank_address: i32,
+    #[serde(rename = "minLines", default)]
+    pub min_lines: Option<usize>,
 }
 
 #[derive(Deserialize, Clone)]
@@ -87,6 +97,8 @@ pub struct PoiConfig {
     pub importance: f64,
     #[serde(rename = "rankAddress")]
     pub rank_address: i32,
+    #[serde(rename = "minLines", default)]
+    pub min_lines: Option<usize>,
 }
 
 #[derive(Deserialize, Clone)]
@@ -99,6 +111,8 @@ pub struct StopPlaceConfig {
     pub stop_type_factors: std::collections::HashMap<String, f64>,
     #[serde(rename = "interchangeFactors")]
     pub interchange_factors: std::collections::HashMap<String, f64>,
+    #[serde(rename = "minLines", default)]
+    pub min_lines: Option<usize>,
 }
 
 #[derive(Deserialize, Clone)]
@@ -127,6 +141,8 @@ pub struct BelagenhetConfig {
     pub street_popularity: f64,
     #[serde(rename = "rankAddress", default = "default_belagenhet_rank")]
     pub rank_address: i32,
+    #[serde(rename = "minLines", default)]
+    pub min_lines: Option<usize>,
 }
 
 fn default_belagenhet_address_pop() -> f64 { 20.0 }
@@ -139,6 +155,7 @@ impl Default for BelagenhetConfig {
             address_popularity: default_belagenhet_address_pop(),
             street_popularity: default_belagenhet_street_pop(),
             rank_address: default_belagenhet_rank(),
+            min_lines: None,
         }
     }
 }
@@ -210,6 +227,38 @@ mod tests {
         assert_eq!(config.matrikkel.address_popularity, 20.0);
         assert_eq!(config.matrikkel.street_popularity, 20.0);
         assert_eq!(config.matrikkel.rank_address, 26);
+    }
+
+    #[test]
+    fn test_min_lines_absent_defaults_to_none() {
+        // No source section in TEST_CONFIG sets "minLines", so every threshold is None (no check).
+        let config: Config = serde_json::from_str(TEST_CONFIG).unwrap();
+        assert_eq!(config.osm.min_lines, None);
+        assert_eq!(config.matrikkel.min_lines, None);
+        assert_eq!(config.stop_place.min_lines, None);
+        assert_eq!(config.belagenhet.min_lines, None);
+    }
+
+    #[test]
+    fn test_min_lines_parses_per_source() {
+        // Add a minLines threshold inside the osm and stopPlace sections only.
+        let json = TEST_CONFIG
+            .replace(
+                r#""rankAddress": { "boundary": 10, "place": 20, "road": 26, "building": 28, "poi": 30 },"#,
+                r#""rankAddress": { "boundary": 10, "place": 20, "road": 26, "building": 28, "poi": 30 },
+                   "minLines": 30000,"#,
+            )
+            .replace(
+                r#""interchangeFactors": { "preferredInterchange": 10.0 }"#,
+                r#""interchangeFactors": { "preferredInterchange": 10.0 }, "minLines": 40000"#,
+            );
+        let config: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(config.osm.min_lines, Some(30000));
+        assert_eq!(config.stop_place.min_lines, Some(40000));
+        // Sources without a minLines key stay None.
+        assert_eq!(config.matrikkel.min_lines, None);
+        assert_eq!(config.stedsnavn.min_lines, None);
+        assert_eq!(config.poi.min_lines, None);
     }
 
     #[test]

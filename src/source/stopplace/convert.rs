@@ -31,7 +31,7 @@ pub fn convert_all(
     output: &Path,
     is_appending: bool,
     usage: &UsageBoost,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<usize, Box<dyn std::error::Error>> {
     let xml = std::fs::read_to_string(input)?;
     let result = parse_netex(&xml)?;
     let importance_calc = ImportanceCalculator::new(&config.importance, usage);
@@ -117,8 +117,8 @@ pub fn convert_all(
         }
     }
 
-    JsonWriter::export(&entries, output, is_appending)?;
-    Ok(())
+    let count = JsonWriter::export(&entries, output, is_appending)?;
+    Ok(count)
 }
 
 /// A stop place's role in the parent-child hierarchy. Affects which source category

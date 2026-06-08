@@ -75,6 +75,43 @@ export LANTMATERIET_PASS=your_password
 | `-d` | Cache directory for downloads (see below); also via `NOMINATIM_CACHE_DIR` |
 | `--refresh-cache` | Ignore cache hits and re-download |
 | `-u` | Local `id;name;usage` CSV that boosts popular entities (see below) |
+| `--min-lines <N>` | Abort if fewer than N entries are written (sanity check; see below) |
+
+### Minimum line count (`--min-lines`)
+
+A sanity check against silently broken imports (an empty download, a changed
+upstream format). If a conversion writes fewer than the threshold, it exits
+non-zero instead of shipping a degraded index. The check counts the entries
+*this run* emits (not the file total), so it works correctly in `-a` append
+mode too.
+
+Set a threshold per source by adding a `minLines` key to that source's config
+section:
+
+```json
+"osm": {
+  "defaultValue": 0.5,
+  "rankAddress": { ... },
+  "filters": [ ... ],
+  "minLines": 30000
+},
+"matrikkel": {
+  "addressPopularity": 1.0,
+  "streetPopularity": 2.0,
+  "rankAddress": 26,
+  "minLines": 2000000
+}
+```
+
+`--min-lines <N>` overrides the config value for a single run - useful for the
+per-region/municipality imports (`matrikkel`/`stedsnavn`/`belagenhet`) where a
+fixed national baseline doesn't apply, and `--min-lines 0` disables the check
+for one invocation. When unset in both places, no check is performed. For
+`belagenhet` with several municipalities in one invocation, the threshold
+applies to the run's total, not per municipality. The example config
+(`converter.example.json`) omits `minLines` on purpose - it doubles as the
+test fixture; see `geocoder/photon/import/config/nominatim-converter.json` for
+production values.
 
 ### Caching downloads
 
