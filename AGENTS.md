@@ -16,6 +16,15 @@ cargo clippy --release   # should produce zero warnings
 
 The release build uses LTO (`[profile.release] lto = true`).
 
+## Commands
+
+Two ways in (`src/main.rs`):
+
+- **`build`** is the production entry point. It reads the config, converts every source whose section is present, and appends them all into one NDJSON in a fixed order (matrikkel, stedsnavn, poi, stopplace, osm, belagenhet). A source section is present only when you want that source, and a present section **must** carry an `input` (a missing `input` is a parse error); omit the section to skip the source. `build` owns all downloading and ordering, so the import shell script is just "call `build`."
+- **Per-source subcommands** (`stopplace`, `matrikkel`, `osm`, `stedsnavn`, `poi`, `belagenhet`) convert a single **local** file via `-i`. They do not download - that is `build`'s job. They exist for tests and ad-hoc debugging. `regions`/`municipalities` print the codes accepted by `region`/`municipality` inputs.
+
+A source's location is `config.<source>.input`, a `SourceInput` (`src/config.rs`): `{ "url": ... }`, `{ "file": ... }`, `{ "region": ... }` (Geonorge, matrikkel/stedsnavn only), or `{ "municipality": ... }` (Lantmäteriet, belagenhet only). `region`/`municipality` on the wrong section is a build-time error, not a type error. The usage CSV is modelled the same way: a `usage` section with an `input` field (plus optional `alpha`/`usageFloor`), present to enable the boost. `build` resolves the stedsnavn source once and reuses it as matrikkel's county GML, so a region/URL is fetched only once.
+
 ## Key design decisions
 
 ### Output must match the original converter exactly (unless `--usage` is in play)
@@ -35,22 +44,24 @@ The CSV is shared across every subcommand. Each source converter looks up by its
 
 The canonical CSV is generated from PostHog by the `posthog-popular-stops` job in [`geocoder/.github/workflows/cache-data-sources.yml`](../geocoder/.github/workflows/cache-data-sources.yml) and uploaded to `gs://ent-geocoder-prd/data-sources/popular-stops.csv`. The job merges both boardings (`fra`) and alightings (`til`) PostHog insights, summing usage per id.
 
-`--usage` only accepts local paths, not GCS URIs, so download first:
+`build` resolves the CSV from the `usage` section's `input` automatically (downloading/caching like any other source). The `--usage <FILE>` flag only accepts a local path, so for a single-source subcommand, download first:
 
 ```bash
 gcloud storage cp gs://ent-geocoder-prd/data-sources/popular-stops.csv .
 nominatim-converter --usage popular-stops.csv stopplace -i stops.xml -o stops.ndjson -c converter.json
 ```
 
+(An explicit `--usage` path also overrides the `usage` section's `input` for a `build` run.)
+
 When `--usage` is set, output **deliberately diverges** from the original Java converter for any boosted entity. Do not use `compare-ndjson.py` against the Java baseline as a regression check in that mode - importance values will differ. Without `--usage`, output remains bit-identical and the comparison still applies.
 
 GoSP popularity is the product of its member stops' (boosted) popularities, then run through `ImportanceCalculator::calculate_importance`, which clamps the output to `[floor, 1.0]` per the Nominatim 0-1 specification. Far-focus major cities outrank near-focus same-prefix streets via the geocoder proxy's request-side weight defaults (Photon `location_bias_scale ~ 0.5`), not via importance values above 1.
 
-GoSP IDs listed in `groupOfStopPlaces.secondaryGosps` are demoted in autocomplete via two converter-side levers (no user-visible field is mutated): (1) importance is pinned to `SECONDARY_GOSP_IMPORTANCE` (0.001, hardcoded - must be strictly positive because Photon's `function_score` drops docs whose total collapses to zero), and (2) `rank_address` is set to 0, which maps the doc to Photon's `AddressType.OTHER` so it forfeits the +0.4 weight `SearchQueryBuilder.setupShortQuery` gives non-"other" docs. The list is explicit rather than heuristic-detected because the redundant-aggregator pattern (e.g. NSR:GroupOfStopPlaces:7 "Bergen" coexisting with GoSP:174 "Bergen sentrum") is hard to distinguish from canonical city aggregators that just happen to have a sibling. Today only GoSP:7 is configured.
+GoSP IDs listed in `stopPlace.groupOfStopPlaces.secondaryGosps` are demoted in autocomplete via two converter-side levers (no user-visible field is mutated): (1) importance is pinned to `SECONDARY_GOSP_IMPORTANCE` (0.001, hardcoded - must be strictly positive because Photon's `function_score` drops docs whose total collapses to zero), and (2) `rank_address` is set to 0, which maps the doc to Photon's `AddressType.OTHER` so it forfeits the +0.4 weight `SearchQueryBuilder.setupShortQuery` gives non-"other" docs. The list is explicit rather than heuristic-detected because the redundant-aggregator pattern (e.g. NSR:GroupOfStopPlaces:7 "Bergen" coexisting with GoSP:174 "Bergen sentrum") is hard to distinguish from canonical city aggregators that just happen to have a sibling. Today only GoSP:7 is configured.
 
 ### Optional per-source minimum line count (`minLines` / `--min-lines`)
 
-Each source config section takes an optional `minLines` threshold; if a conversion writes fewer entries, it exits non-zero (a tripwire against empty/truncated downloads shipping a degraded index). Resolution is CLI-overrides-config: `--min-lines <N>` wins over `minLines.<source>`, and `--min-lines 0` effectively disables the check for one run; unset in both means no check. Two non-obvious semantics: the count is the entries emitted by **this run** (tracked in `JsonWriter`, returned up through each converter as `Result<usize>`), so it is correct in `-a` append mode; and for a multi-municipality `belagenhet -m` invocation the threshold applies to the **run total**, not per municipality. Thresholds are region-specific: `geocoder/photon/import/config/nominatim-converter.json` holds Norway values, and `nominatim-converter-sweden.json` holds Sweden values (much larger belagenhet, no Norway-only sources) - the import script picks one via a sources-conf `CONVERTER_CONFIG` override. `converter.example.json` deliberately omits `minLines` (it doubles as the test fixture).
+Each source config section takes an optional `minLines` threshold; if a conversion writes fewer entries, it exits non-zero (a tripwire against empty/truncated downloads shipping a degraded index). In `build`, each source's `minLines` is enforced from its config section. The single-source subcommands additionally accept `--min-lines <N>`, which wins over `minLines.<source>` (and `--min-lines 0` disables the check for one run); unset in both means no check. Two non-obvious semantics: the count is the entries emitted by **this run** (tracked in `JsonWriter`, returned up through each converter as `Result<usize>`), so it is correct in `-a` append mode; and for a `municipality` build (multiple municipalities) the threshold applies to the **run total**, not per municipality. Thresholds are profile-specific: `geocoder/photon/import/config/converter-prod.json` holds Norway values, and `converter-sweden-test.json` holds Sweden values (much larger belagenhet, no Norway-only sources). Each per-environment `converter-*.json` is a complete profile (sources + scoring), picked by name by the import script. `converter.example.json` deliberately omits `minLines` (it doubles as the test fixture).
 
 ### Coordinate conversions have inherent precision differences
 
@@ -141,7 +152,7 @@ All source converters have unit tests (`cargo test --release` runs ~240 tests). 
 2. **stedsnavn** (22 tests): Target type recognition (by/bydel/tettsted/tettsteddel/tettbebyggelse), spelling status filtering (vedtatt/godkjent/privat/samlevedtak accepted), GML parsing with historisk alt spelling, diacritics preservation, field validation (source, accuracy, country_code, importance, rank_address), locality/county GID format, coordinate ranges, titleized names
 3. **matrikkel** (12 tests): CSV→NDJSON conversion, field validation (id, source, accuracy, country_a, locality, borough, housenumber with letter suffix), county population via stedsnavn GML, address + street entry generation, category correctness, coordinate validity, importance range, county GID in categories
 4. **poi** (7 tests): ValidBetween date filtering (valid/expired/future/always-valid/open-ended), coordinate and category correctness
-5. **integration** (17 tests, `tests/integration.rs`): Black-box binary tests via `std::process::Command`. CLI behavior (no args, missing input, output-exists-without-force), all subcommands produce valid NDJSON with correct headers/sources/fields, append mode doesn't duplicate headers, force flag overwrites, coordinate validity, matrikkel --no-county flag, matrikkel missing GML error, expired POI filtering, Norwegian diacritics
+5. **integration** (32 tests, `tests/integration.rs`): Black-box binary tests via `std::process::Command`. CLI behavior (no args, missing input, output-exists-without-force), all subcommands produce valid NDJSON with correct headers/sources/fields, append mode doesn't duplicate headers, force flag overwrites, coordinate validity, matrikkel --no-county flag, matrikkel missing GML error, expired POI filtering, Norwegian diacritics; `build` combines configured sources into one file with a single header, skips omitted sections, rejects a section missing its `input`, rejects region-on-wrong-section, errors when no source is configured, and refuses an existing output without `-f`
 6. **osm** (47 tests): Popularity formula (base × max priority, highest priority wins, unmatched/empty → zero), filter_tags (keeps only configured filters, sorted BTreeMap keys, empty for no matches), rank_address determination (boundary > place > road > building > poi priority), convert_node integration (object_type, accuracy, source, categories from filtered tags, alt name extraction from filtered tags only, en:name, OSM ID in extra and indexed alt_names, coordinates, importance reflects priority), admin boundary integration (county_gid, locality_gid, titleized municipality name, county_gid in categories), extract_country_code (ISO3166-2, country_code tag, numeric ref → Norway), as_category colon replacement, plus low-level tests (CoordinateStore, BoundingBox, ray casting, street segment distance, centroid calculation, titleize)
 
 ### Test data fixtures

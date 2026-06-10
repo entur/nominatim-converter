@@ -6,7 +6,7 @@ use crate::common::importance::ImportanceCalculator;
 use crate::common::text::join_osm_values;
 use crate::common::usage::UsageBoost;
 use crate::common::util::titleize;
-use crate::config::Config;
+use crate::config::{Config, MatrikkelConfig};
 use crate::target::json_writer::JsonWriter;
 use crate::target::nominatim_id::as_place_id;
 use crate::target::nominatim_place::*;
@@ -30,7 +30,8 @@ pub fn convert_all(
     stedsnavn_gml: Option<&Path>,
     usage: &UsageBoost,
 ) -> Result<usize, Box<dyn std::error::Error>> {
-    let importance_calc = ImportanceCalculator::new(&config.importance, usage);
+    let matrikkel = config.matrikkel.as_ref().ok_or("config is missing the required `matrikkel` section")?;
+    let importance_calc = ImportanceCalculator::new(usage);
     let kommune_mapping = if let Some(gml_path) = stedsnavn_gml {
         build_kommune_mapping(gml_path)?
     } else {
@@ -44,7 +45,7 @@ pub fn convert_all(
     let mut street_groups: HashMap<(String, String), StreetAgg> = HashMap::new();
 
     for addr in &all_addresses {
-        let place = convert_address(addr, config, &importance_calc, &kommune_mapping);
+        let place = convert_address(addr, matrikkel, &importance_calc, &kommune_mapping);
         writer.write_entry(&place)?;
 
         // Simultaneously build street aggregation for Pass 2
@@ -69,7 +70,7 @@ pub fn convert_all(
 
     // Pass 2: stream streets to output
     for agg in street_groups.values() {
-        let place = convert_street(agg, config, &importance_calc, &kommune_mapping);
+        let place = convert_street(agg, matrikkel, &importance_calc, &kommune_mapping);
         writer.write_entry(&place)?;
     }
 
@@ -78,7 +79,7 @@ pub fn convert_all(
 
 fn convert_address(
     addr: &MatrikkelAdresse,
-    config: &Config,
+    matrikkel: &MatrikkelConfig,
     importance_calc: &ImportanceCalculator,
     kommune_mapping: &HashMap<String, KommuneInfo>,
 ) -> NominatimPlace {
@@ -115,7 +116,7 @@ fn convert_address(
         .and_then(|k| kommune_mapping.get(k).map(|i| titleize(&i.fylkesnavn)));
 
     let importance = RawNumber::from_f64_6dp(
-        importance_calc.calculate_importance_for(&id, config.matrikkel.address_popularity)
+        importance_calc.calculate_importance_for(&id, matrikkel.address_popularity)
     );
 
     NominatimPlace {
@@ -125,7 +126,7 @@ fn convert_address(
             object_type: "N".to_string(),
             object_id: 0,
             categories: indexed_cats,
-            rank_address: config.matrikkel.rank_address,
+            rank_address: matrikkel.rank_address,
             importance,
             parent_place_id: Some(0),
             name: None, // addresses are "nameless"
@@ -159,7 +160,7 @@ fn convert_address(
 
 fn convert_street(
     agg: &StreetAgg,
-    config: &Config,
+    matrikkel: &MatrikkelConfig,
     importance_calc: &ImportanceCalculator,
     kommune_mapping: &HashMap<String, KommuneInfo>,
 ) -> NominatimPlace {
@@ -202,7 +203,7 @@ fn convert_street(
         .and_then(|k| kommune_mapping.get(k).map(|i| titleize(&i.fylkesnavn)));
 
     let importance = RawNumber::from_f64_6dp(
-        importance_calc.calculate_importance_for(&id, config.matrikkel.street_popularity)
+        importance_calc.calculate_importance_for(&id, matrikkel.street_popularity)
     );
 
     NominatimPlace {
@@ -212,7 +213,7 @@ fn convert_street(
             object_type: "N".to_string(),
             object_id: 0,
             categories: indexed_cats,
-            rank_address: config.matrikkel.rank_address,
+            rank_address: matrikkel.rank_address,
             importance,
             parent_place_id: Some(0),
             name: Some(Name {
@@ -416,7 +417,7 @@ mod tests {
     #[test]
     fn matrikkel_popularity_returns_expected_values() {
         let config = test_config();
-        assert_eq!(config.matrikkel.address_popularity, 20.0);
-        assert_eq!(config.matrikkel.street_popularity, 20.0);
+        assert_eq!(config.matrikkel.as_ref().unwrap().address_popularity, 20.0);
+        assert_eq!(config.matrikkel.as_ref().unwrap().street_popularity, 20.0);
     }
 }

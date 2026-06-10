@@ -1,7 +1,7 @@
 # Entrance-tie mapping worklist
 
 Generated 2026-06-04 from `norway-latest.osm.pbf` (Geofabrik extract dated 2026-05-29) with the
-production import config (`geocoder/photon/import/config/nominatim-converter.json`).
+production import config (`geocoder/photon/import/config/converter-prod.json`).
 
 ## What this is
 
@@ -19,7 +19,7 @@ candidates, so either resolves the tie. This improves OSM for every consumer, no
 
 ```
 cargo run --release -- osm -i norway-latest.osm.pbf -o /tmp/out.ndjson \
-  -c <geocoder>/photon/import/config/nominatim-converter.json -f
+  -c <geocoder>/photon/import/config/converter-prod.json -f
 ```
 
 The entrance-enrichment block in the log reports the tie count, spread distribution and the widest

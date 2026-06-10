@@ -44,6 +44,167 @@ fn cleanup(path: &Path) {
     let _ = std::fs::remove_file(path);
 }
 
+// ===== build (config-driven import) =====
+
+/// A complete converter config: every source section present with a local `file` input
+/// pointing at a test-data fixture.
+fn build_config_json() -> String {
+    let f = |name: &str| test_data(name).display().to_string();
+    format!(
+        r#"{{
+  "osm": {{
+    "input": {{ "file": "{osm}" }},
+    "defaultValue": 1.0,
+    "rankAddress": {{ "boundary": 10, "place": 20, "road": 26, "building": 28, "poi": 30 }},
+    "filters": [{{"key": "amenity", "value": "hospital", "priority": 9}}]
+  }},
+  "stedsnavn": {{ "input": {{ "file": "{sted}" }}, "defaultValue": 40.0, "rankAddress": 16 }},
+  "matrikkel": {{ "input": {{ "file": "{matr}" }}, "addressPopularity": 20.0, "streetPopularity": 20.0, "rankAddress": 26 }},
+  "poi": {{ "input": {{ "file": "{poi}" }}, "importance": 0.5, "rankAddress": 30 }},
+  "stopPlace": {{
+    "input": {{ "file": "{stop}" }},
+    "defaultValue": 50, "rankAddress": 30,
+    "stopTypeFactors": {{ "busStation": 2.0 }},
+    "interchangeFactors": {{ "preferredInterchange": 10.0 }}
+  }}
+}}"#,
+        osm = f("terningmoen.osm.pbf"),
+        sted = f("Basisdata_3420_Elverum_25833_Stedsnavn_GML.gml"),
+        matr = f("Basisdata_3420_Elverum_25833_MatrikkelenAdresse.csv"),
+        poi = f("poi-test.xml"),
+        stop = f("stopPlaces.xml"),
+    )
+}
+
+fn write_temp_config(name: &str, contents: &str) -> PathBuf {
+    let path = std::env::temp_dir().join(format!("nominatim-build-{}-{name}.json", std::process::id()));
+    std::fs::write(&path, contents).expect("write temp config");
+    path
+}
+
+#[test]
+fn build_combines_configured_sources_into_one_file() {
+    let config = write_temp_config("combine", &build_config_json());
+    let output = temp_output("build-combine");
+    let (success, _, stderr) = run_converter(&["build", "-c", config.to_str().unwrap(), "-o", output.to_str().unwrap(), "-f"]);
+    assert!(success, "build failed: {stderr}");
+
+    let lines = read_ndjson(&output);
+    assert_eq!(lines[0]["type"], "NominatimDumpFile", "first line should be the header");
+    // Appending five sources must not duplicate the header.
+    let headers = lines.iter().filter(|l| l["type"] == "NominatimDumpFile").count();
+    assert_eq!(headers, 1, "expected exactly one header, got {headers}");
+
+    // Entries from several distinct sources should be present (matrikkel, stedsnavn,
+    // poi, stopplace, osm all tag extra.source differently).
+    let sources: std::collections::HashSet<String> = lines
+        .iter()
+        .filter_map(|l| l["content"][0]["extra"]["source"].as_str().map(str::to_string))
+        .collect();
+    // Each configured source must actually contribute (a silent drop-out would leave one
+    // missing). OSM is intentionally excluded: the tiny test PBF matches no configured filter.
+    for expected in ["kartverket-matrikkelenadresse", "kartverket-stedsnavn", "custom-poi", "nsr"] {
+        assert!(sources.contains(expected), "missing entries from {expected}; got {sources:?}");
+    }
+    // OSM is configured but the tiny test PBF matches no filter, so it contributes nothing.
+    assert!(!sources.contains("openstreetmap"), "test PBF should yield no OSM entries; got {sources:?}");
+
+    // The stedsnavn source is resolved once and reused as matrikkel's county GML; a matrikkel
+    // entry with a populated county proves that wiring held.
+    let matrikkel_has_county = lines.iter().any(|l| {
+        l["content"][0]["extra"]["source"] == "kartverket-matrikkelenadresse"
+            && l["content"][0]["address"]["county"].is_string()
+    });
+    assert!(matrikkel_has_county, "matrikkel county should be populated from the reused stedsnavn GML");
+
+    cleanup(&output);
+    let _ = std::fs::remove_file(&config);
+}
+
+#[test]
+fn build_skips_omitted_sources() {
+    // The headline behavior: a config with only some source sections builds cleanly and
+    // produces exactly that subset (this is the sweden-test deployment shape).
+    let f = |name: &str| test_data(name).display().to_string();
+    let config_json = format!(
+        r#"{{
+  "stedsnavn": {{ "input": {{ "file": "{sted}" }}, "defaultValue": 40.0, "rankAddress": 16 }},
+  "poi": {{ "input": {{ "file": "{poi}" }}, "importance": 0.5, "rankAddress": 30 }}
+}}"#,
+        sted = f("Basisdata_3420_Elverum_25833_Stedsnavn_GML.gml"),
+        poi = f("poi-test.xml"),
+    );
+    let config = write_temp_config("skip", &config_json);
+    let output = temp_output("build-skip");
+    let (success, _, stderr) = run_converter(&["build", "-c", config.to_str().unwrap(), "-o", output.to_str().unwrap(), "-f"]);
+    assert!(success, "partial build failed: {stderr}");
+
+    let lines = read_ndjson(&output);
+    let sources: std::collections::HashSet<String> = lines
+        .iter()
+        .filter_map(|l| l["content"][0]["extra"]["source"].as_str().map(str::to_string))
+        .collect();
+    assert!(sources.contains("kartverket-stedsnavn") && sources.contains("custom-poi"), "configured sources missing: {sources:?}");
+    assert!(
+        !sources.contains("kartverket-matrikkelenadresse") && !sources.contains("nsr"),
+        "omitted sections must not contribute entries: {sources:?}"
+    );
+    cleanup(&output);
+    let _ = std::fs::remove_file(&config);
+}
+
+#[test]
+fn build_rejects_region_input_on_wrong_section() {
+    // `region` is only valid for matrikkel/stedsnavn; on poi it must fail with a clear,
+    // section-tagged error rather than silently doing something surprising.
+    let config_json = r#"{ "poi": { "input": { "region": "03" }, "importance": 0.5, "rankAddress": 30 } }"#;
+    let config = write_temp_config("bad-region", config_json);
+    let output = temp_output("build-bad-region");
+    let (success, _, stderr) = run_converter(&["build", "-c", config.to_str().unwrap(), "-o", output.to_str().unwrap(), "-f"]);
+    assert!(!success, "region input on poi should fail");
+    assert!(stderr.contains("region") && stderr.contains("poi"), "unexpected stderr: {stderr}");
+    cleanup(&output);
+    let _ = std::fs::remove_file(&config);
+}
+
+#[test]
+fn build_rejects_source_section_without_input() {
+    // A declared source section with no `input` is a hard error - you said you want the
+    // source but didn't say where its data comes from.
+    let config_json = r#"{ "poi": { "importance": 0.5, "rankAddress": 30 } }"#;
+    let config = write_temp_config("no-input", config_json);
+    let output = temp_output("build-no-input");
+    let (success, _, stderr) = run_converter(&["build", "-c", config.to_str().unwrap(), "-o", output.to_str().unwrap(), "-f"]);
+    assert!(!success, "poi section without input should fail");
+    assert!(stderr.to_lowercase().contains("input"), "error should mention the missing input: {stderr}");
+    cleanup(&output);
+    let _ = std::fs::remove_file(&config);
+}
+
+#[test]
+fn build_errors_when_no_sources_configured() {
+    // An empty config declares no sources at all - distinct from a section missing its input.
+    let config = write_temp_config("empty", "{}");
+    let output = temp_output("build-empty");
+    let (success, _, stderr) = run_converter(&["build", "-c", config.to_str().unwrap(), "-o", output.to_str().unwrap(), "-f"]);
+    assert!(!success, "build with no sources should fail");
+    assert!(stderr.contains("No data sources configured"), "unexpected stderr: {stderr}");
+    cleanup(&output);
+    let _ = std::fs::remove_file(&config);
+}
+
+#[test]
+fn build_refuses_existing_output_without_force() {
+    let config = write_temp_config("exists", &build_config_json());
+    let output = temp_output("build-exists");
+    std::fs::write(&output, "preexisting\n").unwrap();
+    let (success, _, stderr) = run_converter(&["build", "-c", config.to_str().unwrap(), "-o", output.to_str().unwrap()]);
+    assert!(!success, "build should refuse to clobber existing output without -f");
+    assert!(stderr.contains("already exists"), "unexpected stderr: {stderr}");
+    cleanup(&output);
+    let _ = std::fs::remove_file(&config);
+}
+
 // ===== CLI behavior =====
 
 #[test]

@@ -3,6 +3,7 @@ use crate::common::coordinate::Coordinate;
 use crate::common::country::Country;
 use crate::common::extra::Extra;
 use crate::common::geo;
+use crate::common::importance::IMPORTANCE_FLOOR;
 use crate::common::usage::UsageBoost;
 use crate::config::Config;
 use crate::target::json_writer::JsonWriter;
@@ -20,6 +21,7 @@ pub fn convert_all(
     is_appending: bool,
     usage: &UsageBoost,
 ) -> Result<usize, Box<dyn std::error::Error>> {
+    config.poi.as_ref().ok_or("config is missing the required `poi` section")?;
     let xml = std::fs::read_to_string(input)?;
     let topo_places = parse_topographic_places(&xml)?;
     let now = Local::now().naive_local();
@@ -49,6 +51,7 @@ fn is_valid(tp: &TopographicPlaceXml, now: &NaiveDateTime) -> bool {
 }
 
 fn convert_topo_place(config: &Config, tp: &TopographicPlaceXml, usage: &UsageBoost) -> Option<NominatimPlace> {
+    let poi = config.poi.as_ref().expect("poi config present when converting poi");
     let id = tp.id.as_deref().unwrap_or("");
     let name = tp.descriptor.as_ref()?.name.as_deref().unwrap_or("");
     let centroid_xml = tp.centroid.as_ref()?;
@@ -69,14 +72,14 @@ fn convert_topo_place(config: &Config, tp: &TopographicPlaceXml, usage: &UsageBo
             object_type: "N".to_string(),
             object_id: 0,
             categories: indexed_cats,
-            rank_address: config.poi.rank_address,
-            // POI provides importance directly (config.poi.importance is in 0-1 output range),
+            rank_address: poi.rank_address,
+            // POI provides importance directly (poi.importance is in 0-1 output range),
             // so we apply the usage boost here rather than through ImportanceCalculator. Clamp
             // to `[floor, 1.0]` to match the Nominatim 0-1 spec and the precision used by every
             // other source.
             importance: RawNumber::from_f64_6dp(
-                (config.poi.importance * usage.factor(id))
-                    .clamp(config.importance.floor, 1.0),
+                (poi.importance * usage.factor(id))
+                    .clamp(IMPORTANCE_FLOOR, 1.0),
             ),
             parent_place_id: None,
             name: Some(Name { name: Some(name.to_string()), name_en: None, alt_name: None }),

@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::config::UsageConfig;
+/// Default boost tuning, used when no `usage` section is configured. Referenced by the
+/// `usage` config section's serde defaults so there is a single source of truth.
+pub const DEFAULT_ALPHA: f64 = 0.5;
+pub const DEFAULT_USAGE_FLOOR: u64 = 100;
 
 /// Optional per-entity popularity nudge driven by an external semicolon-separated CSV.
 ///
@@ -19,15 +22,16 @@ use crate::config::UsageConfig;
 /// normalisation in [`crate::common::importance::ImportanceCalculator`].
 pub struct UsageBoost {
     counts: HashMap<String, u64>,
-    cfg: UsageConfig,
+    alpha: f64,
+    usage_floor: u64,
 }
 
 impl UsageBoost {
     pub fn empty() -> Self {
-        Self { counts: HashMap::new(), cfg: UsageConfig::default() }
+        Self { counts: HashMap::new(), alpha: DEFAULT_ALPHA, usage_floor: DEFAULT_USAGE_FLOOR }
     }
 
-    pub fn load(path: Option<&Path>, cfg: &UsageConfig) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn load(path: Option<&Path>, alpha: f64, usage_floor: u64) -> Result<Self, Box<dyn std::error::Error>> {
         let Some(path) = path else {
             return Ok(Self::empty());
         };
@@ -52,15 +56,15 @@ impl UsageBoost {
             counts.insert(id.to_string(), usage);
         }
         eprintln!("Loaded usage data: {} entries from {}", counts.len(), path.display());
-        Ok(Self { counts, cfg: cfg.clone() })
+        Ok(Self { counts, alpha, usage_floor })
     }
 
     pub fn factor(&self, id: &str) -> f64 {
         let Some(&usage) = self.counts.get(id) else { return 1.0 };
-        if usage <= self.cfg.usage_floor {
+        if usage <= self.usage_floor {
             return 1.0;
         }
-        1.0 + self.cfg.alpha * (usage as f64 / self.cfg.usage_floor as f64).log10()
+        1.0 + self.alpha * (usage as f64 / self.usage_floor as f64).log10()
     }
 }
 
@@ -68,16 +72,12 @@ impl UsageBoost {
 mod tests {
     use super::*;
 
-    fn cfg() -> UsageConfig {
-        UsageConfig { alpha: 0.5, usage_floor: 100 }
-    }
-
     fn with(counts: &[(&str, u64)]) -> UsageBoost {
         let mut counts_map = HashMap::new();
         for (id, n) in counts {
             counts_map.insert((*id).to_string(), *n);
         }
-        UsageBoost { counts: counts_map, cfg: cfg() }
+        UsageBoost { counts: counts_map, alpha: DEFAULT_ALPHA, usage_floor: DEFAULT_USAGE_FLOOR }
     }
 
     #[test]
@@ -118,7 +118,7 @@ mod tests {
     fn parses_minimal_csv_with_optional_header() {
         let path = std::env::temp_dir().join("usage_boost_minimal.csv");
         std::fs::write(&path, "id;name;usage\nNSR:StopPlace:1;Oslo S;1500\n# comment\n\nNSR:StopPlace:2;Lillestrøm;42\n").unwrap();
-        let u = UsageBoost::load(Some(&path), &cfg()).unwrap();
+        let u = UsageBoost::load(Some(&path), DEFAULT_ALPHA, DEFAULT_USAGE_FLOOR).unwrap();
         assert_eq!(u.factor("NSR:StopPlace:1"), 1.0 + 0.5 * (15f64).log10());
         assert_eq!(u.factor("NSR:StopPlace:2"), 1.0); // below floor
         let _ = std::fs::remove_file(path);
@@ -128,7 +128,7 @@ mod tests {
     fn parses_csv_without_header() {
         let path = std::env::temp_dir().join("usage_boost_no_header.csv");
         std::fs::write(&path, "NSR:StopPlace:1;Oslo S;1500\nNSR:StopPlace:2;Bergen;2500\n").unwrap();
-        let u = UsageBoost::load(Some(&path), &cfg()).unwrap();
+        let u = UsageBoost::load(Some(&path), DEFAULT_ALPHA, DEFAULT_USAGE_FLOOR).unwrap();
         assert!(u.factor("NSR:StopPlace:1") > 1.0);
         assert!(u.factor("NSR:StopPlace:2") > 1.0);
         let _ = std::fs::remove_file(path);
@@ -138,7 +138,7 @@ mod tests {
     fn parses_csv_with_only_id_and_usage() {
         let path = std::env::temp_dir().join("usage_boost_two_col.csv");
         std::fs::write(&path, "NSR:StopPlace:1;1500\n").unwrap();
-        let u = UsageBoost::load(Some(&path), &cfg()).unwrap();
+        let u = UsageBoost::load(Some(&path), DEFAULT_ALPHA, DEFAULT_USAGE_FLOOR).unwrap();
         assert!(u.factor("NSR:StopPlace:1") > 1.0);
         let _ = std::fs::remove_file(path);
     }
@@ -147,7 +147,7 @@ mod tests {
     fn extra_columns_are_ignored() {
         let path = std::env::temp_dir().join("usage_boost_extra_cols.csv");
         std::fs::write(&path, "id;name;type;usage\nNSR:StopPlace:1;Oslo S;rail;1500\n").unwrap();
-        let u = UsageBoost::load(Some(&path), &cfg()).unwrap();
+        let u = UsageBoost::load(Some(&path), DEFAULT_ALPHA, DEFAULT_USAGE_FLOOR).unwrap();
         assert!(u.factor("NSR:StopPlace:1") > 1.0);
         let _ = std::fs::remove_file(path);
     }
@@ -156,14 +156,14 @@ mod tests {
     fn invalid_non_header_line_errors() {
         let path = std::env::temp_dir().join("usage_boost_invalid.csv");
         std::fs::write(&path, "id;name;usage\nNSR:StopPlace:1;Oslo S;1500\nNSR:StopPlace:2;Bergen;not-a-number\n").unwrap();
-        let res = UsageBoost::load(Some(&path), &cfg());
+        let res = UsageBoost::load(Some(&path), DEFAULT_ALPHA, DEFAULT_USAGE_FLOOR);
         assert!(res.is_err());
         let _ = std::fs::remove_file(path);
     }
 
     #[test]
     fn no_path_disables_boost() {
-        let u = UsageBoost::load(None, &cfg()).unwrap();
+        let u = UsageBoost::load(None, DEFAULT_ALPHA, DEFAULT_USAGE_FLOOR).unwrap();
         assert_eq!(u.factor("anything"), 1.0);
     }
 }

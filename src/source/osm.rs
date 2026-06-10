@@ -30,6 +30,7 @@ pub fn convert(
     is_appending: bool,
     usage: &crate::common::usage::UsageBoost,
 ) -> Result<usize, Box<dyn std::error::Error>> {
+    config.osm.as_ref().ok_or("config is missing the required `osm` section")?;
     let converter = OsmConverter::new(config.clone());
     converter.convert(input, output, is_appending, usage)
 }

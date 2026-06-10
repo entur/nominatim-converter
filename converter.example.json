@@ -1,5 +1,7 @@
 {
+  "usage": { "input": { "url": "https://storage.googleapis.com/ent-geocoder-prd/data-sources/popular-stops.csv" } },
   "osm": {
+    "input": { "url": "https://storage.googleapis.com/ror-osmdata-prd/osm-data/norway-latest.osm.pbf" },
     "defaultValue": 1.0,
     "rankAddress": {
       "boundary": 10,
@@ -63,19 +65,23 @@
     ]
   },
   "stedsnavn": {
+    "input": { "region": "all" },
     "defaultValue": 40.0,
     "rankAddress": 16
   },
   "matrikkel": {
+    "input": { "region": "all" },
     "addressPopularity": 20.0,
     "streetPopularity": 20.0,
     "rankAddress": 26
   },
   "poi": {
+    "input": { "url": "https://storage.googleapis.com/ent-geocoder-prd/data-sources/events_norway_poi.xml" },
     "importance": 0.5,
     "rankAddress": 30
   },
   "stopPlace": {
+    "input": { "url": "https://storage.googleapis.com/marduk-production/tiamat/Current_latest.zip" },
     "defaultValue": 50,
     "rankAddress": 30,
     "stopTypeFactors": {
@@ -86,14 +92,15 @@
     "interchangeFactors": {
       "recommendedInterchange": 3.0,
       "preferredInterchange": 10.0
+    },
+    "groupOfStopPlaces": {
+      "rankAddress": 30
     }
   },
-  "groupOfStopPlaces": {
-    "rankAddress": 30
-  },
-  "importance": {
-    "minPopularity": 1.0,
-    "maxPopularity": 1000000000.0,
-    "floor": 0.1
+  "belagenhet": {
+    "input": { "municipality": "all" },
+    "addressPopularity": 20.0,
+    "streetPopularity": 20.0,
+    "rankAddress": 26
   }
 }

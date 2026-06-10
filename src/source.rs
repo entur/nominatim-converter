@@ -9,26 +9,28 @@ pub mod stopplace;
 pub(crate) mod test_helpers {
     use crate::config::Config;
 
-    /// Shared test config with all sections populated.
-    /// Each converter only reads its own section, so extra fields don't matter.
+    /// Shared test config with all sections populated. Each section carries a placeholder
+    /// `input` (required by the schema but unread by the converters, which take local files
+    /// directly in these tests).
     pub fn test_config() -> Config {
         serde_json::from_str(r#"{
             "osm": {
+                "input": { "file": "unused" },
                 "defaultValue": 1.0,
                 "rankAddress": { "boundary": 10, "place": 20, "road": 26, "building": 28, "poi": 30 },
                 "filters": [{"key": "amenity", "value": "hospital", "priority": 9}]
             },
-            "stedsnavn": { "defaultValue": 40.0, "rankAddress": 16 },
-            "matrikkel": { "addressPopularity": 20.0, "streetPopularity": 20.0, "rankAddress": 26 },
-            "poi": { "importance": 0.5, "rankAddress": 30 },
+            "stedsnavn": { "input": { "file": "unused" }, "defaultValue": 40.0, "rankAddress": 16 },
+            "matrikkel": { "input": { "file": "unused" }, "addressPopularity": 20.0, "streetPopularity": 20.0, "rankAddress": 26 },
+            "poi": { "input": { "file": "unused" }, "importance": 0.5, "rankAddress": 30 },
             "stopPlace": {
+                "input": { "file": "unused" },
                 "defaultValue": 50,
                 "rankAddress": 30,
                 "stopTypeFactors": { "busStation": 2.0, "metroStation": 2.0, "railStation": 2.0 },
-                "interchangeFactors": { "recommendedInterchange": 3.0, "preferredInterchange": 10.0 }
-            },
-            "groupOfStopPlaces": { "rankAddress": 30 },
-            "importance": { "minPopularity": 1.0, "maxPopularity": 1000000000.0, "floor": 0.1 }
+                "interchangeFactors": { "recommendedInterchange": 3.0, "preferredInterchange": 10.0 },
+                "groupOfStopPlaces": { "rankAddress": 30 }
+            }
         }"#).unwrap()
     }
 
@@ -36,6 +38,7 @@ pub(crate) mod test_helpers {
     pub fn test_config_with_osm_filters() -> Config {
         serde_json::from_str(r#"{
             "osm": {
+                "input": { "file": "unused" },
                 "defaultValue": 1.0,
                 "rankAddress": { "boundary": 10, "place": 20, "road": 26, "building": 28, "poi": 30 },
                 "filters": [
@@ -48,17 +51,17 @@ pub(crate) mod test_helpers {
                     {"key": "tourism", "value": "attraction", "priority": 1}
                 ]
             },
-            "stedsnavn": { "defaultValue": 40.0, "rankAddress": 16 },
-            "matrikkel": { "addressPopularity": 20.0, "streetPopularity": 20.0, "rankAddress": 26 },
-            "poi": { "importance": 0.5, "rankAddress": 30 },
+            "stedsnavn": { "input": { "file": "unused" }, "defaultValue": 40.0, "rankAddress": 16 },
+            "matrikkel": { "input": { "file": "unused" }, "addressPopularity": 20.0, "streetPopularity": 20.0, "rankAddress": 26 },
+            "poi": { "input": { "file": "unused" }, "importance": 0.5, "rankAddress": 30 },
             "stopPlace": {
+                "input": { "file": "unused" },
                 "defaultValue": 50,
                 "rankAddress": 30,
                 "stopTypeFactors": { "busStation": 2.0, "metroStation": 2.0, "railStation": 2.0 },
-                "interchangeFactors": { "recommendedInterchange": 3.0, "preferredInterchange": 10.0 }
-            },
-            "groupOfStopPlaces": { "rankAddress": 30 },
-            "importance": { "minPopularity": 1.0, "maxPopularity": 1000000000.0, "floor": 0.1 }
+                "interchangeFactors": { "recommendedInterchange": 3.0, "preferredInterchange": 10.0 },
+                "groupOfStopPlaces": { "rankAddress": 30 }
+            }
         }"#).unwrap()
     }
 

@@ -3,7 +3,7 @@ use crate::common::coordinate::Coordinate;
 use crate::common::country::Country;
 use crate::common::extra::Extra;
 use crate::common::geo;
-use crate::common::importance::ImportanceCalculator;
+use crate::common::importance::{ImportanceCalculator, IMPORTANCE_FLOOR};
 use crate::common::text::{join_osm_values, OSM_TAG_SEPARATOR};
 use crate::common::translator;
 use crate::common::usage::UsageBoost;
@@ -18,7 +18,7 @@ use std::path::Path;
 /// adds importance to the document score after wrapping the query in a `function_score` with
 /// `boostMode=Sum`. Empirically, a negative importance can drive the combined score below zero,
 /// at which point Lucene clamps it and the document disappears from results. The actual
-/// assigned value is `max(SECONDARY_GOSP_IMPORTANCE, config.importance.floor)` so the
+/// assigned value is `max(SECONDARY_GOSP_IMPORTANCE, IMPORTANCE_FLOOR)` so the
 /// `[floor, 1.0]` invariant always holds even if floor is raised above 0.001.
 const SECONDARY_GOSP_IMPORTANCE: f64 = 0.001;
 
@@ -32,9 +32,10 @@ pub fn convert_all(
     is_appending: bool,
     usage: &UsageBoost,
 ) -> Result<usize, Box<dyn std::error::Error>> {
+    let stop_place = config.stop_place.as_ref().ok_or("config is missing the required `stopPlace` section")?;
     let xml = std::fs::read_to_string(input)?;
     let result = parse_netex(&xml)?;
-    let importance_calc = ImportanceCalculator::new(&config.importance, usage);
+    let importance_calc = ImportanceCalculator::new(usage);
 
     // Build child stop types map (parentRef -> list of child stopPlaceTypes)
     let mut stop_place_types: HashMap<String, Vec<String>> = HashMap::new();
@@ -52,7 +53,7 @@ pub fn convert_all(
     // in `calculate_gosp_popularity` so they don't need a separate lookup.
     let stop_popularities: HashMap<String, i64> = result.stop_places.iter().map(|sp| {
         let child_types = stop_place_types.get(&sp.id).cloned().unwrap_or_default();
-        let pop = calculate_stop_popularity(&config.stop_place, sp, &child_types, usage.factor(&sp.id));
+        let pop = calculate_stop_popularity(stop_place, sp, &child_types, usage.factor(&sp.id));
         (sp.id.clone(), pop)
     }).collect();
 
@@ -88,7 +89,7 @@ pub fn convert_all(
     let stop_by_id: HashMap<&str, &StopPlaceXml> =
         result.stop_places.iter().map(|sp| (sp.id.as_str(), sp)).collect();
 
-    let secondary_gosps: HashSet<&str> = config.group_of_stop_places.secondary_gosps
+    let secondary_gosps: HashSet<&str> = stop_place.group_of_stop_places.secondary_gosps
         .iter().map(String::as_str).collect();
     if !secondary_gosps.is_empty() {
         let gosp_ids: HashSet<&str> = result.groups.iter().map(|g| g.id.as_str()).collect();
@@ -142,6 +143,7 @@ pub(crate) fn convert_stop_place(
     child_stop_names: &[String],
     child_stops: &[&StopPlaceXml],
 ) -> Option<NominatimPlace> {
+    let stop_place = config.stop_place.as_ref().expect("stopplace config present when converting stopplace");
     let centroid_xml = sp.centroid.as_ref()?;
     let coord = Coordinate::new(centroid_xml.location.latitude, centroid_xml.location.longitude);
     let sp_name = sp.name.as_deref()?;
@@ -181,7 +183,7 @@ pub(crate) fn convert_stop_place(
             object_type: "N".to_string(),
             object_id: 0,
             categories: indexed_cats,
-            rank_address: config.stop_place.rank_address,
+            rank_address: stop_place.rank_address,
             importance,
             parent_place_id: Some(0),
             name: Some(Name {
@@ -399,6 +401,7 @@ pub(crate) fn convert_gosp(
     stop_by_id: &HashMap<&str, &StopPlaceXml>,
     is_secondary: bool,
 ) -> Option<NominatimPlace> {
+    let stop_place = config.stop_place.as_ref().expect("stopplace config present when converting stopplace");
     let centroid_xml = gosp.centroid.as_ref()?;
     let coord = Coordinate::new(centroid_xml.location.latitude, centroid_xml.location.longitude);
     let group_name = gosp.name.as_deref()?;
@@ -411,7 +414,7 @@ pub(crate) fn convert_gosp(
     // Clamp to `[floor, 1.0]` per the Nominatim 0-1 spec; secondary GoSPs ride the configured
     // floor (never below) so they sink under real stops in autocomplete.
     let raw_importance = if is_secondary {
-        SECONDARY_GOSP_IMPORTANCE.max(config.importance.floor)
+        SECONDARY_GOSP_IMPORTANCE.max(IMPORTANCE_FLOOR)
     } else {
         importance_calc.calculate_importance(gos_pop)
     };
@@ -435,7 +438,7 @@ pub(crate) fn convert_gosp(
     // doc whose `OBJECT_TYPE != "other"` earns a +0.4 function-score weight; secondary GoSPs
     // forfeit that boost. Combined with the importance cap, this is enough to push the bare
     // "Bergen" GoSP below real Bergen stops without modifying any user-visible field.
-    let rank_address = if is_secondary { 0 } else { config.group_of_stop_places.rank_address };
+    let rank_address = if is_secondary { 0 } else { stop_place.group_of_stop_places.rank_address };
 
     let mut member_names: Vec<String> = gosp.members.as_ref()
         .map(|m| m.refs.iter()
@@ -701,7 +704,7 @@ mod tests {
     #[test]
     fn funicular_transport_mode_included_in_categories() {
         let config = test_config();
-        let importance_calc = ImportanceCalculator::new(&config.importance, &EMPTY_USAGE);
+        let importance_calc = ImportanceCalculator::new(&EMPTY_USAGE);
         let sp = make_stop_place("NSR:StopPlace:1", "Test", Some("funicular"), Some("other"));
         let result = convert_stop_place(
             &config, &importance_calc, &sp, &HashMap::new(), &HashMap::new(),
@@ -715,7 +718,7 @@ mod tests {
     #[test]
     fn bus_transport_mode_not_in_categories() {
         let config = test_config();
-        let importance_calc = ImportanceCalculator::new(&config.importance, &EMPTY_USAGE);
+        let importance_calc = ImportanceCalculator::new(&EMPTY_USAGE);
         let sp = make_stop_place("NSR:StopPlace:1", "Test", Some("bus"), Some("onstreetBus"));
         let result = convert_stop_place(
             &config, &importance_calc, &sp, &HashMap::new(), &HashMap::new(),
@@ -729,7 +732,7 @@ mod tests {
     #[test]
     fn stop_place_types_indexed_as_first_class_facet() {
         let config = test_config();
-        let importance_calc = ImportanceCalculator::new(&config.importance, &EMPTY_USAGE);
+        let importance_calc = ImportanceCalculator::new(&EMPTY_USAGE);
         let sp = make_stop_place("NSR:StopPlace:1", "Test", Some("rail"), Some("railStation"));
         let result = convert_stop_place(
             &config, &importance_calc, &sp, &HashMap::new(), &HashMap::new(),
@@ -742,7 +745,7 @@ mod tests {
     #[test]
     fn parent_stop_includes_child_types_and_multimodal_category() {
         let config = test_config();
-        let importance_calc = ImportanceCalculator::new(&config.importance, &EMPTY_USAGE);
+        let importance_calc = ImportanceCalculator::new(&EMPTY_USAGE);
         let sp = make_stop_place("NSR:StopPlace:Parent", "Hub", Some("funicular"), Some("other"));
         let mut child_types_map: HashMap<String, Vec<String>> = HashMap::new();
         child_types_map.insert("NSR:StopPlace:Parent".to_string(),
@@ -794,7 +797,7 @@ mod tests {
     #[test]
     fn gosp_alt_name_contains_member_stop_names_not_id() {
         let config = test_config();
-        let importance_calc = ImportanceCalculator::new(&config.importance, &EMPTY_USAGE);
+        let importance_calc = ImportanceCalculator::new(&EMPTY_USAGE);
 
         let oslo_s = make_stop_place("NSR:StopPlace:59872", "Oslo S", Some("rail"), Some("railStation"));
         let oslo_bus = make_stop_place("NSR:StopPlace:58366", "Oslo Bussterminal", Some("bus"), Some("busStation"));
@@ -829,7 +832,7 @@ mod tests {
     #[test]
     fn gosp_bbox_spans_member_stops() {
         let config = test_config();
-        let importance_calc = ImportanceCalculator::new(&config.importance, &EMPTY_USAGE);
+        let importance_calc = ImportanceCalculator::new(&EMPTY_USAGE);
 
         let mut west = make_stop_place("NSR:StopPlace:1", "West", Some("bus"), None);
         west.centroid = Some(CentroidXml { location: LocationXml { longitude: 10.70, latitude: 59.90 } });
@@ -867,7 +870,7 @@ mod tests {
         // importance capped, rank_address set to 0. GoSP:72 (Hammerfest) is the control - same
         // fixture, no demotion config, must keep its full importance and configured rank_address.
         let mut config = test_config();
-        config.group_of_stop_places.secondary_gosps =
+        config.stop_place.as_mut().expect("stopplace config present").group_of_stop_places.secondary_gosps =
             vec!["NSR:GroupOfStopPlaces:1".to_string()];
         let input = test_data_path("stopPlaces.xml");
         let output = std::env::temp_dir().join("test_secondary_gosp_cap.ndjson");
@@ -889,7 +892,7 @@ mod tests {
 
         let demoted = line_for("NSR:GroupOfStopPlaces:1");
         let kept = line_for("NSR:GroupOfStopPlaces:72");
-        let expected_demoted = SECONDARY_GOSP_IMPORTANCE.max(config.importance.floor);
+        let expected_demoted = SECONDARY_GOSP_IMPORTANCE.max(IMPORTANCE_FLOOR);
         assert_eq!(importance_of(&demoted), expected_demoted,
             "demoted GoSP must be pinned at max(SECONDARY_GOSP_IMPORTANCE, floor)");
         assert!(importance_of(&kept) >= expected_demoted,
@@ -1015,7 +1018,7 @@ mod tests {
 
         let csv = std::env::temp_dir().join("test_usage_boost_input.csv");
         std::fs::write(&csv, "id;name;usage\nNSR:StopPlace:56697;Oslo S;5000000\n").unwrap();
-        let usage = UsageBoost::load(Some(&csv), &crate::config::UsageConfig::default()).unwrap();
+        let usage = UsageBoost::load(Some(&csv), crate::common::usage::DEFAULT_ALPHA, crate::common::usage::DEFAULT_USAGE_FLOOR).unwrap();
         let boosted_out = std::env::temp_dir().join("test_usage_boosted.ndjson");
         convert_all(&config, &input, &boosted_out, false, &usage).unwrap();
         let boosted = std::fs::read_to_string(&boosted_out).unwrap();

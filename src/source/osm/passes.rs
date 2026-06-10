@@ -286,7 +286,7 @@ impl OsmConverter {
             pass4::EntranceOverrides::default()
         };
 
-        let importance_calc = ImportanceCalculator::new(&self.config.importance, usage);
+        let importance_calc = ImportanceCalculator::new(usage);
         let mut converter = OsmEntityConverter {
             nodes_coords,
             way_centroids,

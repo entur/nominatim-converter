@@ -25,57 +25,80 @@ The binary is at `target/release/nominatim-converter`.
 
 ## Usage
 
-All subcommands require a `converter.json` configuration file (see [`converter.example.json`](converter.example.json) for the schema).
+Everything is driven by a `converter.json` configuration file (see
+[`converter.example.json`](converter.example.json) for the schema - it lists
+every source section, including `belagenhet`, for completeness; a real config
+contains only the sources it imports).
+
+### `build` (the normal path)
+
+`build` runs a full import: it converts every source whose section sets an
+`input` and appends them all into one NDJSON, in a fixed order (matrikkel,
+stedsnavn, poi, stopplace, osm, belagenhet). Sources, their locations, and the
+scoring all live in the config, so this is a single command:
 
 ```bash
-# StopPlace
-nominatim-converter stopplace -i stop_places.xml -o output.ndjson -c converter.json
-
-# Matrikkel (addresses + streets, needs stedsnavn GML for county lookup)
-nominatim-converter matrikkel -i adresse.csv -o output.ndjson -c converter.json -g stedsnavn.gml
-
-# Matrikkel (without county data)
-nominatim-converter matrikkel -i adresse.csv -o output.ndjson -c converter.json --no-county
-
-# Stedsnavn
-nominatim-converter stedsnavn -i stedsnavn.gml -o output.ndjson -c converter.json
-
-# POI
-nominatim-converter poi -i poi.xml -o output.ndjson -c converter.json
-
-# OSM
-nominatim-converter osm -i planet.osm.pbf -o output.ndjson -c converter.json
-
-# Belägenhetsadress (from local GeoPackage file)
-nominatim-converter belagenhet -i belagenhetsadresser_kn0180.gpkg -o output.ndjson -c converter.json
-
-# Belägenhetsadress (download from Lantmäteriet by municipality code)
-nominatim-converter belagenhet -m 0180 -o output.ndjson -c converter.json
-
-# Belägenhetsadress (multiple municipalities)
-nominatim-converter belagenhet -m 0180 0114 1480 -o output.ndjson -c converter.json
+nominatim-converter build -c converter.json -o output.ndjson -f
 ```
 
-The `belagenhet -m` download mode requires Lantmäteriet Geotorget credentials via environment variables or a `.env` file:
+Each source's `input` says where its data comes from:
+
+```json
+"matrikkel":  { "input": { "region": "all" }, ... },                 // Geonorge download
+"stopPlace":  { "input": { "url": "https://.../Current_latest.zip" }, ... },
+"osm":        { "input": { "file": "norway-latest.osm.pbf" }, ... },  // local file
+"belagenhet": { "input": { "municipality": "all" }, ... }            // Lantmäteriet download
+```
+
+`region` (matrikkel/stedsnavn, Geonorge) and `municipality` (belagenhet,
+Lantmäteriet) trigger downloads; `url` and `file` are generic. **A section is
+present only when you want to import that source, and a present section must have
+an `input`** (a section without one is a hard error - you declared a source but
+not where its data comes from). To skip a source, omit its section entirely. The
+usage CSV goes in a `usage` section with its own `input` (plus optional `alpha`/
+`usageFloor` tuning) - present it to enable the boost, omit it to skip. `build` resolves the
+stedsnavn source once and reuses it as matrikkel's county GML, so it is fetched
+only once.
+
+`build` with a `municipality` input requires Lantmäteriet Geotorget credentials
+via environment variables or a `.env` file:
 
 ```bash
 export LANTMATERIET_USER=your_username
 export LANTMATERIET_PASS=your_password
 ```
 
+### Single-source subcommands (local files)
+
+The per-source subcommands convert one **local** file - handy for debugging or
+ad-hoc runs. They do not download; use `build` with an `input` for that.
+
+```bash
+nominatim-converter stopplace  -i stop_places.xml -o out.ndjson -c converter.json
+nominatim-converter matrikkel  -i adresse.csv -o out.ndjson -c converter.json -g stedsnavn.gml
+nominatim-converter matrikkel  -i adresse.csv -o out.ndjson -c converter.json --no-county
+nominatim-converter stedsnavn  -i stedsnavn.gml -o out.ndjson -c converter.json
+nominatim-converter poi        -i poi.xml -o out.ndjson -c converter.json
+nominatim-converter osm        -i planet.osm.pbf -o out.ndjson -c converter.json
+nominatim-converter belagenhet -i belagenhetsadresser_kn0180.gpkg -o out.ndjson -c converter.json
+```
+
+`regions` and `municipalities` list the codes accepted by `region`/
+`municipality` inputs.
+
 ### Common flags
 
 | Flag | Description |
 |------|-------------|
-| `-i` | Input file (required) |
+| `-i` | Input local file (single-source subcommands; required) |
 | `-o` | Output file (required) |
-| `-c` | Config file (defaults to `converter.json` in CWD) |
+| `-c` | Config file (defaults to `converter.json` in CWD; required for `build`) |
 | `-f` | Force overwrite existing output |
 | `-a` | Append to existing output |
 | `-d` | Cache directory for downloads (see below); also via `NOMINATIM_CACHE_DIR` |
 | `--refresh-cache` | Ignore cache hits and re-download |
 | `-u` | Local `id;name;usage` CSV that boosts popular entities (see below) |
-| `--min-lines <N>` | Abort if fewer than N entries are written (sanity check; see below) |
+| `--min-lines <N>` | Abort if fewer than N entries are written (single-source subcommands; sanity check; see below) |
 
 ### Minimum line count (`--min-lines`)
 
@@ -103,25 +126,25 @@ section:
 }
 ```
 
-`--min-lines <N>` overrides the config value for a single run - useful for the
-per-region/municipality imports (`matrikkel`/`stedsnavn`/`belagenhet`) where a
-fixed national baseline doesn't apply, and `--min-lines 0` disables the check
-for one invocation. When unset in both places, no check is performed. For
-`belagenhet` with several municipalities in one invocation, the threshold
-applies to the run's total, not per municipality. The example config
+`build` enforces each source's config `minLines` (per source; for a
+`municipality` run it applies to the run's total, not per municipality). The
+single-source subcommands additionally accept `--min-lines <N>` to override the
+config value for one run - useful for a smaller region where the national
+baseline doesn't apply, with `--min-lines 0` disabling the check. When unset in
+both places, no check is performed. The example config
 (`converter.example.json`) omits `minLines` on purpose - it doubles as the
-test fixture; see `geocoder/photon/import/config/nominatim-converter.json` for
+test fixture; see `geocoder/photon/import/config/converter-prod.json` for
 production values.
 
 ### Caching downloads
 
-`-d <DIR>` (or `NOMINATIM_CACHE_DIR`) persists downloaded source files and
-reuses them on subsequent runs. For ZIP sources, the extracted entry is
-cached too. With a warm cache, `belagenhet` runs without `LANTMATERIET_*`.
+`-d <DIR>` (or `NOMINATIM_CACHE_DIR`) persists files downloaded by `build`
+(`url`/`region`/`municipality` inputs) and reuses them on subsequent runs. For
+ZIP sources, the extracted entry is cached too. With a warm cache, a
+`municipality` build runs without `LANTMATERIET_*`.
 
 ```bash
-nominatim-converter -d ~/.cache/nominatim-converter osm \
-    -i https://example.com/norway-latest.osm.pbf -o out.ndjson -c converter.json
+nominatim-converter -d ~/.cache/nominatim-converter build -c converter.json -o out.ndjson -f
 ```
 
 Rolling URLs like `Current_latest.zip` or `norway-latest.osm.pbf` silently
@@ -131,11 +154,13 @@ re-download. Or just `rm` the cache directory.
 The cache directory is created with default umask permissions; use a
 user-owned location, not a shared one.
 
-### Boosting popular entities (`-u`)
+### Boosting popular entities (usage)
 
-`-u <FILE>` (or `--usage`) points at a semicolon-separated CSV that nudges
-popular entities upward in the importance ranking. The file is shared
-across every subcommand:
+`build` resolves the usage CSV automatically from the `usage` section's `input`
+(`url`/`file`) and applies it to every source - no flag needed. The `-u <FILE>`
+(`--usage`) flag is for the single-source subcommands and takes a local path
+only. Either way it points at a semicolon-separated CSV that nudges popular
+entities upward in the importance ranking:
 
 ```
 id;name;usage

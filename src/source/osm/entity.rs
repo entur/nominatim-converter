@@ -268,7 +268,7 @@ impl<'a> OsmEntityConverter<'a> {
     }
 
     fn determine_rank_address(&self, tags: &BTreeMap<&str, &str>) -> i32 {
-        let ra = &self.config.osm.rank_address;
+        let ra = &self.config.osm.as_ref().expect("osm config present when converting osm").rank_address;
         if tags.contains_key("boundary") {
             ra.boundary
         } else if tags.contains_key("place") {
@@ -473,7 +473,7 @@ mod tests {
             admin_boundary_index: admin_index,
             street_index,
             popularity_calculator: pop_calc,
-            importance_calc: ImportanceCalculator::new(&config.importance, &EMPTY_USAGE),
+            importance_calc: ImportanceCalculator::new(&EMPTY_USAGE),
             config,
             way_entrance_points: entrance_points,
             relation_entrance_points: &EMPTY_ENTRANCE_POINTS,

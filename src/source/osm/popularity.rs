@@ -16,8 +16,8 @@ pub struct OsmPopularityCalculator {
 
 impl OsmPopularityCalculator {
     pub fn new(config: &Config) -> Self {
-        let filters = config
-            .osm
+        let osm = config.osm.as_ref().expect("osm config present when converting osm");
+        let filters = osm
             .filters
             .iter()
             .map(|f| POIFilter {
@@ -29,7 +29,7 @@ impl OsmPopularityCalculator {
             .collect();
         Self {
             filters,
-            default_value: config.osm.default_value,
+            default_value: osm.default_value,
         }
     }
 

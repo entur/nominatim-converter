@@ -42,10 +42,11 @@ pub fn resolve_geonorge_region(arg: &str) -> Result<String, String> {
 }
 
 pub fn list_regions() {
-    eprintln!("Available regions for Geonorge download:");
-    eprintln!("  all / 0000  All of Norway (large download)");
+    // A listing the user reads or pipes, so it goes to stdout.
+    println!("Available regions for Geonorge download:");
+    println!("  all / 0000  All of Norway (large download)");
     for (code, name, _) in COUNTIES {
-        eprintln!("  {code:<10}{name}");
+        println!("  {code:<10}{name}");
     }
 }
 

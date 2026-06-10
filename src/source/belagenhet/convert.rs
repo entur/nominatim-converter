@@ -6,7 +6,7 @@ use crate::common::importance::ImportanceCalculator;
 use crate::common::text::join_osm_values;
 use crate::common::usage::UsageBoost;
 use crate::common::util::titleize;
-use crate::config::Config;
+use crate::config::{Config, BelagenhetConfig};
 use crate::target::json_writer::JsonWriter;
 use crate::target::nominatim_id::as_place_id;
 use crate::target::nominatim_place::*;
@@ -22,7 +22,8 @@ pub fn convert_all(
     is_appending: bool,
     usage: &UsageBoost,
 ) -> Result<usize, Box<dyn std::error::Error>> {
-    let importance_calc = ImportanceCalculator::new(&config.importance, usage);
+    let belagenhet = config.belagenhet.as_ref().ok_or("config is missing the required `belagenhet` section")?;
+    let importance_calc = ImportanceCalculator::new(usage);
 
     let all_addresses = parse_gpkg(input)?;
 
@@ -31,7 +32,7 @@ pub fn convert_all(
     let mut street_groups: HashMap<String, StreetAgg> = HashMap::new();
 
     for addr in &all_addresses {
-        let place = convert_address(addr, config, &importance_calc);
+        let place = convert_address(addr, belagenhet, &importance_calc);
         writer.write_entry(&place)?;
 
         // Build street aggregation for Pass 2, keyed by (street_name, kommunkod)
@@ -55,7 +56,7 @@ pub fn convert_all(
     for agg in street_groups.values() {
         let avg_east = agg.sum_east / agg.count as f64;
         let avg_north = agg.sum_north / agg.count as f64;
-        let place = convert_street(&agg.representative, avg_east, avg_north, config, &importance_calc);
+        let place = convert_street(&agg.representative, avg_east, avg_north, belagenhet, &importance_calc);
         writer.write_entry(&place)?;
         street_count += 1;
     }
@@ -77,7 +78,7 @@ fn locality_gid(kommunkod: Option<&str>) -> Option<String> {
 
 fn convert_address(
     addr: &BelagenhetAdress,
-    config: &Config,
+    belagenhet: &BelagenhetConfig,
     importance_calc: &ImportanceCalculator,
 ) -> NominatimPlace {
     let coord = geo::convert_sweref99tm_to_lat_lon(addr.easting, addr.northing);
@@ -106,7 +107,7 @@ fn convert_address(
     if let Some(gid) = &l_gid { indexed_cats.push(locality_ids_category(gid)); }
 
     let importance = RawNumber::from_f64_6dp(
-        importance_calc.calculate_importance_for(&id, config.belagenhet.address_popularity)
+        importance_calc.calculate_importance_for(&id, belagenhet.address_popularity)
     );
 
     let postort = addr.postort.as_deref().unwrap_or("");
@@ -118,7 +119,7 @@ fn convert_address(
             object_type: "N".to_string(),
             object_id: 0,
             categories: indexed_cats,
-            rank_address: config.belagenhet.rank_address,
+            rank_address: belagenhet.rank_address,
             importance,
             parent_place_id: Some(0),
             name: None,
@@ -157,7 +158,7 @@ fn convert_street(
     addr: &BelagenhetAdress,
     avg_east: f64,
     avg_north: f64,
-    config: &Config,
+    belagenhet: &BelagenhetConfig,
     importance_calc: &ImportanceCalculator,
 ) -> NominatimPlace {
     let coord = geo::convert_sweref99tm_to_lat_lon(avg_east, avg_north);
@@ -183,7 +184,7 @@ fn convert_street(
     if let Some(gid) = &l_gid { indexed_cats.push(locality_ids_category(gid)); }
 
     let importance = RawNumber::from_f64_6dp(
-        importance_calc.calculate_importance_for(&id, config.belagenhet.street_popularity)
+        importance_calc.calculate_importance_for(&id, belagenhet.street_popularity)
     );
 
     let postort = addr.postort.as_deref().unwrap_or("");
@@ -195,7 +196,7 @@ fn convert_street(
             object_type: "N".to_string(),
             object_id: 0,
             categories: indexed_cats,
-            rank_address: config.belagenhet.rank_address,
+            rank_address: belagenhet.rank_address,
             importance,
             parent_place_id: Some(0),
             name: Some(Name {
