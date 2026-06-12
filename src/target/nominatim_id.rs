@@ -7,21 +7,19 @@ use std::hash::{Hash, Hasher};
 /// ASCII characters, colons are replaced with dashes and other invalid chars with
 /// underscores. For IDs containing non-ASCII (e.g. Norwegian Å, Ø, Æ), a hash
 /// suffix is appended to prevent collisions from lossy sanitization.
+///
+/// Caveat: the hash suffix comes from `DefaultHasher`, whose algorithm is NOT
+/// guaranteed stable across Rust releases -- place_ids for non-ASCII IDs may
+/// change after a toolchain upgrade. The hash only disambiguates within one
+/// import, so this is accepted; but it means output comparisons across builds
+/// can show place_id diffs for non-ASCII IDs.
 pub fn as_place_id(id: &str) -> String {
     let has_non_ascii = id.bytes().any(|b| b > 127);
 
     if has_non_ascii {
         // Use prefix + hash to avoid collisions from lossy character replacement.
         // Budget: 43 chars for the sanitized prefix + 1 dash + 16 hex chars = 60 max.
-        let prefix: String = id
-            .chars()
-            .map(|c| match c {
-                'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-' => c,
-                ':' => '-',
-                _ => '_',
-            })
-            .take(43) // leave room for dash + 16 hex chars = 17
-            .collect();
+        let prefix: String = id.chars().map(sanitize_char).take(43).collect();
 
         let mut hasher = DefaultHasher::new();
         id.hash(&mut hasher);
@@ -29,14 +27,15 @@ pub fn as_place_id(id: &str) -> String {
 
         format!("{prefix}-{hash:016x}")
     } else {
-        id.chars()
-            .map(|c| match c {
-                'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-' => c,
-                ':' => '-',
-                _ => '_',
-            })
-            .take(60)
-            .collect()
+        id.chars().map(sanitize_char).take(60).collect()
+    }
+}
+
+fn sanitize_char(c: char) -> char {
+    match c {
+        'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-' => c,
+        ':' => '-',
+        _ => '_',
     }
 }
 

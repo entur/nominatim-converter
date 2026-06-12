@@ -31,7 +31,7 @@ A source's location is `config.<source>.input`, a `SourceInput` (`src/config.rs`
 
 This is the most important constraint when running without `--usage`. Specifically:
 
-- **place_id values** use the `String.hashCode()` algorithm from the original converter (`src/target/nominatim_id.rs`). Do not replace with Rust's `DefaultHasher` — the hash values must match the original output.
+- **place_id values** are sanitized and truncated to Photon's `[0-9a-zA-Z_-]{1,60}` in `src/target/nominatim_id.rs`. IDs containing non-ASCII characters get a `DefaultHasher` suffix to disambiguate lossy `_` substitution. Note that `DefaultHasher` is not stability-guaranteed across Rust releases, so those suffixes can change on a toolchain upgrade -- exact hash values are load-bearing only within a single import/comparison run.
 - **Floating-point formatting** uses exactly 6 decimal places for `importance`, `centroid`, and `bbox` fields (`src/target/nominatim_place.rs`). This is enforced via custom serde serializers using `serde_json::value::RawValue`.
 - **Country detection** uses `boundaries60x30.ser`, embedded via `include_bytes!` (`src/common/geo.rs`). This file originates from [JOSM's boundaries.osm](https://josm.openstreetmap.de/browser/josm/trunk/resources/data/boundaries.osm), manually edited for border accuracy and stored in [entur/geocoder-data](https://github.com/entur/geocoder-data), then converted to `.ser` using the [countryboundaries](https://github.com/westnordost/countryboundaries) generator. Do not switch to the Rust crate's built-in data — it produces different results for border cases.
 - **Country code mapping** covers all ISO 3166-1 countries (`src/common/country.rs`). Do not reduce to a subset.
