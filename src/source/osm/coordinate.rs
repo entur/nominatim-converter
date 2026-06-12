@@ -46,6 +46,9 @@ pub struct CoordinateStore {
 
 impl CoordinateStore {
     pub fn new(initial_capacity: usize) -> Self {
+        // hash() takes the id modulo the capacity, so a zero capacity would divide by zero on
+        // the first put/get.
+        assert!(initial_capacity > 0, "CoordinateStore capacity must be positive");
         Self {
             ids: vec![0; initial_capacity],
             delta_lats: vec![0; initial_capacity],
@@ -60,6 +63,7 @@ impl CoordinateStore {
         }
         let capacity = self.ids.len();
         let mut index = Self::hash(id, capacity);
+        // id 0 marks an empty slot; OSM ids are always positive.
         while self.ids[index] != 0 && self.ids[index] != id {
             index = (index + 1) % capacity;
         }
@@ -74,6 +78,7 @@ impl CoordinateStore {
     pub fn get(&self, id: i64) -> Option<Coordinate> {
         let capacity = self.ids.len();
         let mut index = Self::hash(id, capacity);
+        // id 0 marks an empty slot; OSM ids are always positive.
         while self.ids[index] != 0 {
             if self.ids[index] == id {
                 let lat = BASE_LAT + self.delta_lats[index] as f64 / COORD_SCALE;

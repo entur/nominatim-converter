@@ -67,6 +67,12 @@ impl OsmPopularityCalculator {
             .iter()
             .any(|f| f.key == key && f.value == value)
     }
+
+    /// True if the entity is a POI we emit: it has a "name" tag and at least one tag matching a
+    /// configured filter.
+    pub(crate) fn is_poi(&self, tags: &HashMap<&str, &str>) -> bool {
+        tags.contains_key("name") && tags.iter().any(|(k, v)| self.has_filter(k, v))
+    }
 }
 
 #[cfg(test)]

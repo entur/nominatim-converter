@@ -216,8 +216,32 @@ pub(crate) struct SelectedEntrance {
     pub(crate) tied: Vec<Coordinate>,
 }
 
-/// The ranking key for one candidate; see the module doc for the tier order.
-type EntranceScore = (u8, u8, u8, u8, u8, u8, u8, u8, u8);
+/// The ranking key for one candidate (higher is better), tuned for an on-foot / transit arrival.
+///
+/// Field order equals the tier order documented in the module doc: the derived `Ord` compares
+/// fields lexicographically in declaration order (with `false < true`), so the highest-priority
+/// tier decides first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct EntranceScore {
+    /// An explicit `*=main` marker (`routing:entrance=main` or `entrance=main`).
+    is_main: bool,
+    /// Unrestricted beats restricted (`foot=no`, or `access=private` without explicit foot access).
+    unrestricted: bool,
+    /// A public pedestrian `entrance=*` (any allowed value except `service`) / `routing:entrance=*`.
+    is_public_entrance: bool,
+    /// A pedestrian barrier crossing (`barrier=stile`/`turnstile`/...).
+    is_pedestrian_barrier: bool,
+    /// A vehicle gate / control passable on foot (`barrier=gate`/`bollard`/`cattle_grid`/...).
+    is_vehicle_barrier: bool,
+    /// A `service` (staff/delivery) `entrance=*`, demoted below real gates.
+    is_service_entrance: bool,
+    /// Below the type tiers: a name only discriminates between same-kind candidates.
+    named: bool,
+    /// Reachable: member of a tracked street or path `highway=*` way.
+    routable: bool,
+    /// On a way built for walking (footway/path/pedestrian/...), preferred over road-only.
+    on_foot_priority_way: bool,
+}
 
 /// Pick the best entrance among the candidate nodes that are members of this feature. Returns
 /// `None` if the feature contains no candidate entrance node. Ties on score are broken by the
@@ -235,8 +259,6 @@ pub(crate) fn select_entrance_for_feature(
         .filter_map(|&nid| {
             let node_tags = data.tags.get(&nid)?;
             let &coord = data.coords.get(&nid)?;
-            // Ranking key (higher is better), tuned for an on-foot / transit arrival; tier order
-            // documented in the module doc.
             let entrance = node_tags.entrance.as_deref();
             let is_main = node_tags.routing_entrance.as_deref() == Some("main")
                 || entrance == Some("main");
@@ -251,18 +273,17 @@ pub(crate) fn select_entrance_for_feature(
                 .barrier
                 .as_deref()
                 .is_some_and(|b| VEHICLE_BARRIERS.contains(&b));
-            let score = (
-                u8::from(is_main),
-                u8::from(!node_tags.restricted),
-                u8::from(is_public_entrance),
-                u8::from(is_pedestrian_barrier),
-                u8::from(is_vehicle_barrier),
-                u8::from(is_service_entrance),
-                // Below the type tiers: a name only discriminates between same-kind candidates.
-                u8::from(node_tags.named),
-                u8::from(is_routable(nid, data)),
-                u8::from(on_foot_priority_way(nid, data)),
-            );
+            let score = EntranceScore {
+                is_main,
+                unrestricted: !node_tags.restricted,
+                is_public_entrance,
+                is_pedestrian_barrier,
+                is_vehicle_barrier,
+                is_service_entrance,
+                named: node_tags.named,
+                routable: is_routable(nid, data),
+                on_foot_priority_way: on_foot_priority_way(nid, data),
+            };
             Some((score, nid, EntrancePoint { node_id: nid, coord }))
         })
         .collect();

@@ -5,12 +5,15 @@ use crate::common::category::{
     LEGACY_CATEGORY_PREFIX, LEGACY_LAYER_ADDRESS, LEGACY_SOURCE_WHOSONFIRST, SOURCE_OSM,
 };
 use crate::common::country::Country;
+// The OSM module keeps its own compact Coordinate for CoordinateStore; this alias is the bridge
+// to the shared geo type used for country lookup.
+use crate::common::coordinate::Coordinate as GeoCoordinate;
 use crate::common::extra::Extra;
 use crate::common::geo;
 use crate::common::importance::ImportanceCalculator;
 use crate::common::text::join_osm_values;
 use crate::common::text::titleize;
-use crate::config::Config;
+use crate::config::RankAddress;
 use crate::target::nominatim_id::as_place_id;
 use crate::target::nominatim_place::*;
 
@@ -47,7 +50,8 @@ pub(crate) struct OsmEntityConverter<'a> {
     pub(crate) street_index: &'a StreetIndex,
     pub(crate) popularity_calculator: &'a OsmPopularityCalculator,
     pub(crate) importance_calc: ImportanceCalculator<'a>,
-    pub(crate) config: &'a Config,
+    /// The configured OSM rank_address values, resolved once at construction from `config.osm`.
+    pub(crate) rank_address: &'a RankAddress,
     /// Way id -> chosen entrance/gate point. Pre-filtered to features worth enriching; empty when
     /// enrichment is disabled, so the override below is then a no-op for every feature.
     pub(crate) way_entrance_points: &'a HashMap<i64, super::entrance::EntrancePoint>,
@@ -58,6 +62,10 @@ pub(crate) struct OsmEntityConverter<'a> {
 
 impl<'a> OsmEntityConverter<'a> {
     /// Filter tags to only those matching configured filters (sorted by key).
+    ///
+    /// Returns a `BTreeMap` deliberately: iterating it yields tags in alphabetical key order,
+    /// matching the original converter's tag ordering. A `HashMap` here would make the category
+    /// output nondeterministic.
     pub(crate) fn filter_tags<'t>(
         &self,
         tags: &HashMap<&'t str, &'t str>,
@@ -205,9 +213,10 @@ impl<'a> OsmEntityConverter<'a> {
         let alt_names = build_alt_names(tags, name);
         let en_name = tags.get("en:name").copied().map(|s| s.to_string());
 
-        let (county_gid, county_name) =
+        let ResolvedAdmin { gid: county_gid, name: county_name } =
             resolve_county(county, fallback_county);
-        let (locality_gid, locality) = resolve_municipality(municipality);
+        let ResolvedAdmin { gid: locality_gid, name: locality } =
+            resolve_municipality(municipality);
 
         let street = self.street_index.find_nearest_street(&centroid);
 
@@ -268,7 +277,7 @@ impl<'a> OsmEntityConverter<'a> {
     }
 
     fn determine_rank_address(&self, tags: &BTreeMap<&str, &str>) -> i32 {
-        let ra = &self.config.osm.as_ref().expect("osm config present when converting osm").rank_address;
+        let ra = self.rank_address;
         if tags.contains_key("boundary") {
             ra.boundary
         } else if tags.contains_key("place") {
@@ -310,27 +319,31 @@ fn build_alt_names(tags: &BTreeMap<&str, &str>, name: &str) -> Vec<String> {
         .collect()
 }
 
+/// The GID and display name resolved from an administrative boundary lookup.
+struct ResolvedAdmin {
+    gid: Option<String>,
+    name: Option<String>,
+}
+
 fn resolve_county(
     county: Option<&AdministrativeBoundary>,
     fallback_county: Option<&str>,
-) -> (Option<String>, Option<String>) {
-    let county_gid = county
+) -> ResolvedAdmin {
+    let gid = county
         .and_then(|c| c.ref_code.as_ref())
         .map(|r| format!("KVE:TopographicPlace:{}", r));
-    let county_name = county
+    let name = county
         .map(|c| titleize(&c.name))
         .or_else(|| fallback_county.map(|s| s.to_string()));
-    (county_gid, county_name)
+    ResolvedAdmin { gid, name }
 }
 
-fn resolve_municipality(
-    municipality: Option<&AdministrativeBoundary>,
-) -> (Option<String>, Option<String>) {
-    let locality_gid = municipality
+fn resolve_municipality(municipality: Option<&AdministrativeBoundary>) -> ResolvedAdmin {
+    let gid = municipality
         .and_then(|m| m.ref_code.as_ref())
         .map(|r| format!("KVE:TopographicPlace:{}", r));
-    let locality = municipality.map(|m| titleize(&m.name));
-    (locality_gid, locality)
+    let name = municipality.map(|m| titleize(&m.name));
+    ResolvedAdmin { gid, name }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -396,10 +409,10 @@ pub(crate) fn determine_country(
         .or_else(|| municipality.map(|m| m.country.clone()))
         .or_else(|| {
             tags.get("addr:country")
-                .and_then(|code| Country::parse(code))
+                .and_then(|id| Country::parse(id))
         })
         .or_else(|| {
-            let c = crate::common::coordinate::Coordinate::new(coord.lat, coord.lon);
+            let c = GeoCoordinate::new(coord.lat, coord.lon);
             geo::get_country(&c)
         })
 }
@@ -433,6 +446,7 @@ pub(crate) fn extract_country_code(tags: &HashMap<&str, &str>) -> Option<Country
 mod tests {
     use super::*;
     use crate::common::usage::UsageBoost;
+    use crate::config::Config;
     use super::super::admin::ADMIN_LEVEL_COUNTY;
     use super::super::admin::ADMIN_LEVEL_MUNICIPALITY;
     use super::super::geometry::BoundingBox;
@@ -474,7 +488,7 @@ mod tests {
             street_index,
             popularity_calculator: pop_calc,
             importance_calc: ImportanceCalculator::new(&EMPTY_USAGE),
-            config,
+            rank_address: &config.osm.as_ref().expect("osm config present in tests").rank_address,
             way_entrance_points: entrance_points,
             relation_entrance_points: &EMPTY_ENTRANCE_POINTS,
         }
@@ -482,8 +496,8 @@ mod tests {
 
     fn empty_converter_parts(config: &Config) -> (CoordinateStore, CoordinateStore, AdministrativeBoundaryIndex, StreetIndex, OsmPopularityCalculator) {
         (
-            CoordinateStore::new(0),
-            CoordinateStore::new(0),
+            CoordinateStore::new(16),
+            CoordinateStore::new(16),
             AdministrativeBoundaryIndex::new(),
             StreetIndex::new(),
             OsmPopularityCalculator::new(config),

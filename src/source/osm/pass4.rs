@@ -21,10 +21,16 @@ const MIN_AREA_SIZE_METERS: f64 = 150.0;
 // These hold the POI data collected during the final PBF scan. We store owned
 // Strings (not references) because the PBF reader only lends data for the
 // duration of each element callback.
+//
+// Output-order invariant: each struct's `ids: Vec<i64>` preserves PBF file
+// order, and the output must match the original converter line for line.
+// NEVER iterate the HashMaps directly -- always loop over `ids` and look the
+// rest up by id.
 // ---------------------------------------------------------------------------
 
 /// POI nodes: coordinates and tags for nodes that match a configured filter.
 pub(crate) struct NodePoiData {
+    /// Node ids in PBF file order -- the only valid iteration order for output.
     pub(crate) ids: Vec<i64>,
     pub(crate) coords: HashMap<i64, Coordinate>,
     pub(crate) tags: HashMap<i64, Vec<(String, String)>>,
@@ -32,6 +38,7 @@ pub(crate) struct NodePoiData {
 
 /// Way data: node lists and tags for ways referenced by POI relations or matching filters directly.
 pub(crate) struct WayPassData {
+    /// Way ids in PBF file order -- the only valid iteration order for output.
     pub(crate) ids: Vec<i64>,
     pub(crate) way_node_ids: HashMap<i64, Vec<i64>>,
     pub(crate) way_tags: HashMap<i64, Vec<(String, String)>>,
@@ -39,10 +46,17 @@ pub(crate) struct WayPassData {
 
 /// Relation POI data: member node/way IDs and tags for relations matching filters.
 pub(crate) struct RelationPassData {
+    /// Relation ids in PBF file order -- the only valid iteration order for output.
     pub(crate) ids: Vec<i64>,
     pub(crate) member_node_ids: HashMap<i64, Vec<i64>>,
     pub(crate) member_way_ids: HashMap<i64, Vec<i64>>,
     pub(crate) tags: HashMap<i64, Vec<(String, String)>>,
+}
+
+/// Borrow a collected owned tag list back into the `HashMap<&str, &str>` form the converter and
+/// popularity calculator work with, without cloning the strings.
+fn borrow_tags(owned: &[(String, String)]) -> HashMap<&str, &str> {
+    owned.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -118,7 +132,7 @@ fn collect_poi_node(
     popularity_calculator: &OsmPopularityCalculator,
     node_data: &mut NodePoiData,
 ) {
-    if is_poi_entity(tags, popularity_calculator) {
+    if popularity_calculator.is_poi(tags) {
         let owned_tags: Vec<(String, String)> =
             tags.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
         node_data.ids.push(id);
@@ -189,7 +203,7 @@ fn collect_poi_relation(
     rel_data: &mut RelationPassData,
 ) {
     let tags: HashMap<&str, &str> = relation.tags().collect();
-    if !is_poi_entity(&tags, popularity_calculator) {
+    if !popularity_calculator.is_poi(&tags) {
         return;
     }
 
@@ -293,7 +307,7 @@ pub(crate) fn compute_entrance_overrides(
         let Some(owned_tags) = way_data.way_tags.get(&way_id) else {
             continue;
         };
-        let tags: HashMap<&str, &str> = owned_tags.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let tags = borrow_tags(owned_tags);
         if !popularity_calculator.use_entrance(&tags) {
             continue;
         }
@@ -319,7 +333,7 @@ pub(crate) fn compute_entrance_overrides(
         let Some(owned_tags) = rel_data.tags.get(&rel_id) else {
             continue;
         };
-        let tags: HashMap<&str, &str> = owned_tags.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let tags = borrow_tags(owned_tags);
         if !popularity_calculator.use_entrance(&tags) {
             continue;
         }
@@ -502,14 +516,13 @@ pub(crate) fn convert_poi_nodes(
     converter: &mut OsmEntityConverter,
     results: &mut Vec<NominatimPlace>,
 ) {
+    // Iterate `ids` (PBF file order), never the HashMaps -- output order must match the
+    // original converter.
     for &node_id in &node_data.ids {
         if let (Some(&coord), Some(owned_tags)) =
             (node_data.coords.get(&node_id), node_data.tags.get(&node_id))
         {
-            let tags: HashMap<&str, &str> = owned_tags
-                .iter()
-                .map(|(k, v)| (k.as_str(), v.as_str()))
-                .collect();
+            let tags = borrow_tags(owned_tags);
             if let Some(place) =
                 converter.convert_node(node_id, coord.lat, coord.lon, &tags)
             {
@@ -525,13 +538,12 @@ pub(crate) fn convert_poi_ways(
     converter: &mut OsmEntityConverter,
     results: &mut Vec<NominatimPlace>,
 ) {
+    // Iterate `ids` (PBF file order), never the HashMaps -- output order must match the
+    // original converter.
     for &way_id in &way_data.ids {
         if poi_way_ids.contains(&way_id)
             && let Some(owned_tags) = way_data.way_tags.get(&way_id) {
-                let tags: HashMap<&str, &str> = owned_tags
-                    .iter()
-                    .map(|(k, v)| (k.as_str(), v.as_str()))
-                    .collect();
+                let tags = borrow_tags(owned_tags);
                 if let Some(place) = converter.convert_way(way_id, &tags) {
                     results.push(place);
                 }
@@ -544,12 +556,11 @@ pub(crate) fn convert_poi_relations(
     converter: &mut OsmEntityConverter,
     results: &mut Vec<NominatimPlace>,
 ) {
+    // Iterate `ids` (PBF file order), never the HashMaps -- output order must match the
+    // original converter.
     for &rel_id in &rel_data.ids {
         if let Some(owned_tags) = rel_data.tags.get(&rel_id) {
-            let tags: HashMap<&str, &str> = owned_tags
-                .iter()
-                .map(|(k, v)| (k.as_str(), v.as_str()))
-                .collect();
+            let tags = borrow_tags(owned_tags);
             let member_nodes = rel_data
                 .member_node_ids
                 .get(&rel_id)
@@ -568,17 +579,6 @@ pub(crate) fn convert_poi_relations(
             }
         }
     }
-}
-
-/// Check if an entity has a name and at least one matching filter tag.
-fn is_poi_entity(
-    tags: &HashMap<&str, &str>,
-    popularity_calculator: &OsmPopularityCalculator,
-) -> bool {
-    tags.contains_key("name")
-        && tags
-            .iter()
-            .any(|(k, v)| popularity_calculator.has_filter(k, v))
 }
 
 #[cfg(test)]

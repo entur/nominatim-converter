@@ -9,6 +9,14 @@ use crate::target::json_writer::JsonWriter;
 use crate::target::nominatim_place::NominatimPlace;
 
 use super::admin::{ADMIN_LEVEL_COUNTY, ADMIN_LEVEL_MUNICIPALITY, AdministrativeBoundaryIndex};
+use super::coordinate::{Coordinate, CoordinateStore};
+use super::entity::{OsmEntityConverter, extract_country_code};
+use super::indexing::{
+    AdminRelationData, StreetWayData, build_admin_boundary_index, build_street_index,
+};
+use super::pass4;
+use super::popularity::OsmPopularityCalculator;
+use super::street::{StreetIndex, HIGHWAY_TYPES};
 
 /// Data collected in pass 1 (relations): admin boundaries and POI relation members.
 pub(crate) struct Pass1Result {
@@ -24,14 +32,6 @@ pub(crate) struct Pass2Result {
     pub needed_node_ids: HashSet<i64>,
     pub admin_way_node_ids: HashMap<i64, Vec<i64>>,
 }
-use super::coordinate::{Coordinate, CoordinateStore};
-use super::entity::{OsmEntityConverter, extract_country_code};
-use super::indexing::{
-    AdminRelationData, StreetWayData, build_admin_boundary_index, build_street_index,
-};
-use super::pass4;
-use super::popularity::OsmPopularityCalculator;
-use super::street::{StreetIndex, HIGHWAY_TYPES};
 
 // ---------------------------------------------------------------------------
 // OsmConverter -- main 4-pass converter
@@ -287,6 +287,13 @@ impl OsmConverter {
         };
 
         let importance_calc = ImportanceCalculator::new(usage);
+        // Resolved once here; the osm section is guaranteed present when converting osm.
+        let rank_address = &self
+            .config
+            .osm
+            .as_ref()
+            .expect("osm config present when converting osm")
+            .rank_address;
         let mut converter = OsmEntityConverter {
             nodes_coords,
             way_centroids,
@@ -294,7 +301,7 @@ impl OsmConverter {
             street_index,
             popularity_calculator,
             importance_calc,
-            config: &self.config,
+            rank_address,
             way_entrance_points: &overrides.way_points,
             relation_entrance_points: &overrides.rel_points,
         };
@@ -323,40 +330,42 @@ fn collect_admin_relation(
         return;
     }
 
-    if let Some(admin_level_str) = tags.get("admin_level")
-        && let Ok(admin_level) = admin_level_str.parse::<i32>()
-            && (admin_level == ADMIN_LEVEL_COUNTY
-                || admin_level == ADMIN_LEVEL_MUNICIPALITY)
-            {
-                let name = tags.get("name").map(|s| s.to_string());
-                let ref_code = tags.get("ref").map(|s| s.to_string());
-                let country = extract_country_code(tags);
+    if let Some(data) = parse_admin_relation(relation, tags) {
+        admin_relations.push(data);
+    }
 
-                if let (Some(name), Some(ref_code), Some(country)) =
-                    (name, ref_code, country)
-                {
-                    let way_ids: Vec<i64> = relation
-                        .members()
-                        .filter(|m| m.member_type == osmpbf::RelMemberType::Way)
-                        .map(|m| m.member_id)
-                        .collect();
-
-                    admin_relations.push(AdminRelationData {
-                        name,
-                        admin_level,
-                        ref_code,
-                        way_ids,
-                        country,
-                    });
-                }
-            }
-
-    // Collect node members from admin relations
+    // Collect node members from admin relations -- unconditionally, even when the relation
+    // itself is not a county/municipality boundary we keep.
     for member in relation.members() {
         if member.member_type == osmpbf::RelMemberType::Node {
             poi_relation_node_ids.insert(member.member_id);
         }
     }
+}
+
+/// Parse a `boundary=administrative` relation into [`AdminRelationData`]. Returns `None` unless
+/// the relation has a parseable county/municipality `admin_level` and all required fields
+/// (name, ref, country) are present.
+fn parse_admin_relation(
+    relation: &osmpbf::Relation,
+    tags: &HashMap<&str, &str>,
+) -> Option<AdminRelationData> {
+    let admin_level: i32 = tags.get("admin_level")?.parse().ok()?;
+    if admin_level != ADMIN_LEVEL_COUNTY && admin_level != ADMIN_LEVEL_MUNICIPALITY {
+        return None;
+    }
+
+    let name = tags.get("name")?.to_string();
+    let ref_code = tags.get("ref")?.to_string();
+    let country = extract_country_code(tags)?;
+
+    let way_ids: Vec<i64> = relation
+        .members()
+        .filter(|m| m.member_type == osmpbf::RelMemberType::Way)
+        .map(|m| m.member_id)
+        .collect();
+
+    Some(AdminRelationData { name, admin_level, ref_code, way_ids, country })
 }
 
 fn collect_poi_relation_members(
@@ -366,11 +375,7 @@ fn collect_poi_relation_members(
     poi_relation_member_way_ids: &mut HashSet<i64>,
     poi_relation_node_ids: &mut HashSet<i64>,
 ) {
-    if !tags.contains_key("name")
-        || !tags
-            .iter()
-            .any(|(k, v)| popularity_calculator.has_filter(k, v))
-    {
+    if !popularity_calculator.is_poi(tags) {
         return;
     }
 
@@ -427,11 +432,7 @@ fn process_way(
     }
 
     // Direct POI way?
-    if tags.contains_key("name")
-        && tags
-            .iter()
-            .any(|(k, v)| popularity_calculator.has_filter(k, v))
-    {
+    if popularity_calculator.is_poi(tags) {
         poi_way_ids.insert(way.id());
         needed_node_ids.extend(node_ids);
     }

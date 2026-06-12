@@ -142,7 +142,7 @@ impl StreetIndex {
         let mut nearest_distance = f64::MAX;
 
         for radius in 0..=MAX_SEARCH_RADIUS {
-            let mut found_in_ring = false;
+            let mut found_closer_in_ring = false;
 
             for d_lat in -radius..=radius {
                 for d_lon in -radius..=radius {
@@ -159,7 +159,7 @@ impl StreetIndex {
                             if distance < nearest_distance {
                                 nearest_distance = distance;
                                 nearest_name = Some(&segment.name);
-                                found_in_ring = true;
+                                found_closer_in_ring = true;
                             }
                         }
                     }
@@ -167,7 +167,7 @@ impl StreetIndex {
             }
 
             // If we found something and the next ring can't possibly be closer, stop
-            if found_in_ring
+            if found_closer_in_ring
                 && nearest_distance < (radius + 1) as f64 * GRID_SIZE * 111_000.0
             {
                 break;
