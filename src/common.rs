@@ -10,3 +10,4 @@ pub mod text;
 pub mod translator;
 pub mod usage;
 pub mod util;
+pub(crate) mod xml;

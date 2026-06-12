@@ -102,18 +102,19 @@ impl DownloadStream {
 /// this to decide whether the next `resolve_input` call will hit the network.
 pub fn is_cached(url: &str, cache: &CacheOptions) -> bool {
     let Some(dir) = cache.dir() else { return false };
+    let (raw, extracted) = cache_paths(dir, url);
+    raw.exists() || extracted.is_some_and(|p| p.exists())
+}
+
+/// Derive the cache locations for `url` under `dir`: the raw download path,
+/// plus the extracted-output path when the URL points at a ZIP. Shared by
+/// `is_cached` and `fetch_and_resolve` so they always agree on what counts
+/// as a cache entry.
+fn cache_paths(dir: &Path, url: &str) -> (PathBuf, Option<PathBuf>) {
     let parsed = parse_url(url);
     let raw = cache_path_in(dir, &parsed.normalized, &parsed.basename);
-    if raw.exists() {
-        return true;
-    }
-    if parsed.is_zip {
-        let extracted = append_suffix(&raw, ".extracted");
-        if extracted.exists() {
-            return true;
-        }
-    }
-    false
+    let extracted = parsed.is_zip.then(|| append_suffix(&raw, ".extracted"));
+    (raw, extracted)
 }
 
 /// Resolve an input that may be a local file or an HTTP(S) URL.
@@ -153,11 +154,13 @@ where
     F: Fn(&str) -> Result<DownloadStream, Box<dyn std::error::Error>>,
 {
     let parsed = parse_url(url);
-    let raw_cache = cache.dir().map(|d| cache_path_in(d, &parsed.normalized, &parsed.basename));
-    let extracted_cache = raw_cache
-        .as_ref()
-        .filter(|_| parsed.is_zip)
-        .map(|p| append_suffix(p, ".extracted"));
+    let (raw_cache, extracted_cache) = match cache.dir() {
+        Some(dir) => {
+            let (raw, extracted) = cache_paths(dir, url);
+            (Some(raw), extracted)
+        }
+        None => (None, None),
+    };
 
     // Fast path: extracted file already cached (skip even the zip).
     if !cache.refresh
@@ -899,8 +902,7 @@ mod tests {
         // A ureq status error wrapped in an io::Error should still be
         // classified by the inner status code.
         let inner = ureq::Error::StatusCode(404);
-        let wrapped: Box<dyn std::error::Error> =
-            Box::new(io::Error::new(io::ErrorKind::Other, inner));
+        let wrapped: Box<dyn std::error::Error> = Box::new(io::Error::other(inner));
         assert!(!is_retryable(wrapped.as_ref()));
     }
 

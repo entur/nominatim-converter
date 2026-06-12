@@ -1,3 +1,4 @@
+use crate::common::xml::read_element_as_string;
 use quick_xml::de::from_str;
 use quick_xml::events::Event;
 use quick_xml::Reader;
@@ -167,26 +168,26 @@ pub(crate) fn parse_netex(xml: &str) -> Result<ParseResult, Box<dyn std::error::
                 let name = std::str::from_utf8(qname.as_ref())?;
                 match name {
                     "StopPlace" => {
-                        let text = read_element_as_string(&mut reader, "StopPlace", e)?;
+                        let text = read_element_as_string(&mut reader, e)?;
                         if let Ok(sp) = from_str::<StopPlaceXml>(&text) {
                             stop_places.push(sp);
                         }
                     }
                     "GroupOfStopPlaces" => {
-                        let text = read_element_as_string(&mut reader, "GroupOfStopPlaces", e)?;
+                        let text = read_element_as_string(&mut reader, e)?;
                         if let Ok(g) = from_str::<GroupOfStopPlacesXml>(&text) {
                             groups.push(g);
                         }
                     }
                     "TopographicPlace" => {
-                        let text = read_element_as_string(&mut reader, "TopographicPlace", e)?;
+                        let text = read_element_as_string(&mut reader, e)?;
                         if let Ok(tp) = from_str::<TopographicPlaceXml>(&text)
                             && let Some(id) = &tp.id {
                                 topo_places.insert(id.clone(), tp);
                             }
                     }
                     "FareZone" => {
-                        let text = read_element_as_string(&mut reader, "FareZone", e)?;
+                        let text = read_element_as_string(&mut reader, e)?;
                         if let Ok(fz) = from_str::<FareZoneXml>(&text)
                             && let Some(id) = &fz.id {
                                 fare_zones.insert(id.clone(), fz);
@@ -203,97 +204,6 @@ pub(crate) fn parse_netex(xml: &str) -> Result<ParseResult, Box<dyn std::error::
     }
 
     Ok(ParseResult { stop_places, groups, topo_places, fare_zones })
-}
-
-pub fn read_element_as_string(
-    reader: &mut Reader<&[u8]>,
-    tag_name: &str,
-    start: &quick_xml::events::BytesStart,
-) -> Result<String, Box<dyn std::error::Error>> {
-    let mut inner = Vec::new();
-    // Reconstruct the start tag
-    inner.extend_from_slice(b"<");
-    inner.extend_from_slice(tag_name.as_bytes());
-    for attr in start.attributes() {
-        let attr = attr?;
-        inner.push(b' ');
-        inner.extend_from_slice(attr.key.as_ref());
-        inner.extend_from_slice(b"=\"");
-        inner.extend_from_slice(&attr.value);
-        inner.push(b'"');
-    }
-    inner.push(b'>');
-    let mut depth = 1u32;
-    let mut buf = Vec::new();
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) => {
-                append_start_tag(&mut inner, e)?;
-                depth += 1;
-            }
-            Ok(Event::End(ref e)) => {
-                depth -= 1;
-                inner.extend_from_slice(b"</");
-                inner.extend_from_slice(e.name().as_ref());
-                inner.push(b'>');
-                if depth == 0 {
-                    break;
-                }
-            }
-            Ok(Event::Empty(ref e)) => {
-                append_empty_tag(&mut inner, e)?;
-            }
-            Ok(Event::Text(ref e)) => {
-                inner.extend_from_slice(e.as_ref());
-            }
-            Ok(Event::CData(ref e)) => {
-                inner.extend_from_slice(b"<![CDATA[");
-                inner.extend_from_slice(e.as_ref());
-                inner.extend_from_slice(b"]]>");
-            }
-            Ok(Event::Eof) => break,
-            Err(e) => return Err(Box::new(e)),
-            _ => {}
-        }
-        buf.clear();
-    }
-    Ok(String::from_utf8(inner)?)
-}
-
-fn append_start_tag(
-    inner: &mut Vec<u8>,
-    e: &quick_xml::events::BytesStart,
-) -> Result<(), Box<dyn std::error::Error>> {
-    inner.push(b'<');
-    inner.extend_from_slice(e.name().as_ref());
-    for attr in e.attributes() {
-        let attr = attr?;
-        inner.push(b' ');
-        inner.extend_from_slice(attr.key.as_ref());
-        inner.extend_from_slice(b"=\"");
-        inner.extend_from_slice(&attr.value);
-        inner.push(b'"');
-    }
-    inner.push(b'>');
-    Ok(())
-}
-
-fn append_empty_tag(
-    inner: &mut Vec<u8>,
-    e: &quick_xml::events::BytesStart,
-) -> Result<(), Box<dyn std::error::Error>> {
-    inner.push(b'<');
-    inner.extend_from_slice(e.name().as_ref());
-    for attr in e.attributes() {
-        let attr = attr?;
-        inner.push(b' ');
-        inner.extend_from_slice(attr.key.as_ref());
-        inner.extend_from_slice(b"=\"");
-        inner.extend_from_slice(&attr.value);
-        inner.push(b'"');
-    }
-    inner.extend_from_slice(b"/>");
-    Ok(())
 }
 
 #[cfg(test)]

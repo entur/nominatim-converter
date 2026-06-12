@@ -5,7 +5,7 @@ use crate::common::geo;
 use crate::common::importance::ImportanceCalculator;
 use crate::common::text::join_osm_values;
 use crate::common::usage::UsageBoost;
-use crate::common::util::titleize;
+use crate::common::text::titleize;
 use crate::config::{Config, MatrikkelConfig};
 use crate::target::json_writer::JsonWriter;
 use crate::target::nominatim_id::as_place_id;
@@ -101,7 +101,7 @@ fn convert_address(
     let mut indexed_cats = visible_cats.clone();
     indexed_cats.push(SOURCE_ADRESSE.to_string());
     indexed_cats.push(LAYER_ADDRESS.to_string());
-    indexed_cats.push(format!("{COUNTRY_PREFIX}{}", country.name));
+    indexed_cats.push(format!("{COUNTRY_PREFIX}{}", country.alpha2));
     indexed_cats.push(id_cat);
     if let Some(gid) = &county_gid { indexed_cats.push(county_ids_category(gid)); }
     if let Some(gid) = &locality_gid { indexed_cats.push(locality_ids_category(gid)); }
@@ -137,14 +137,14 @@ fn convert_address(
                 county: fylkesnavn,
             },
             postcode: addr.postnummer.clone(),
-            country_code: Some(country.name.clone()),
+            country_code: Some(country.alpha2.clone()),
             centroid: coord.centroid(),
             bbox: coord.bbox(),
             extra: Extra {
                 id: Some(id.to_string()),
                 source: Some("kartverket-matrikkelenadresse".to_string()),
                 accuracy: Some("point".to_string()),
-                country_a: Some(country.three_letter_code),
+                country_a: Some(country.alpha3),
                 county_gid,
                 locality: addr.kommunenavn.as_ref().map(|n| titleize(n)),
                 locality_gid,
@@ -194,7 +194,7 @@ fn convert_street(
     let mut indexed_cats = visible_cats.clone();
     indexed_cats.push(SOURCE_ADRESSE.to_string());
     indexed_cats.push(LAYER_STREET.to_string());
-    indexed_cats.push(format!("{COUNTRY_PREFIX}{}", country.name));
+    indexed_cats.push(format!("{COUNTRY_PREFIX}{}", country.alpha2));
     indexed_cats.push(as_category(&id));
     if let Some(gid) = &county_gid { indexed_cats.push(county_ids_category(gid)); }
     if let Some(gid) = &locality_gid { indexed_cats.push(locality_ids_category(gid)); }
@@ -228,14 +228,14 @@ fn convert_street(
                 county: fylkesnavn,
             },
             postcode: None,
-            country_code: Some(country.name.clone()),
+            country_code: Some(country.alpha2.clone()),
             centroid: coord.centroid(),
             bbox,
             extra: Extra {
                 id: Some(id.clone()),
                 source: Some("kartverket-matrikkelenadresse".to_string()),
                 accuracy: Some("point".to_string()),
-                country_a: Some(country.three_letter_code),
+                country_a: Some(country.alpha3),
                 county_gid,
                 locality: addr.kommunenavn.as_ref().map(|n| titleize(n)),
                 locality_gid,

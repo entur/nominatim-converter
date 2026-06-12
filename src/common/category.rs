@@ -18,9 +18,6 @@
 pub const SOURCE_ADRESSE: &str = "source.kartverket.matrikkelenadresse";
 pub const SOURCE_STEDSNAVN: &str = "source.kartverket.stedsnavn";
 pub const SOURCE_NSR: &str = "source.nsr";
-
-pub const GOSP: &str = "GroupOfStopPlaces";
-
 pub const SOURCE_OSM: &str = "source.openstreetmap";
 pub const SOURCE_POI: &str = "source.custom.poi";
 pub const SOURCE_BELAGENHET: &str = "source.lantmateriet.belagenhetsadress";
@@ -30,6 +27,8 @@ pub const LAYER_ADDRESS: &str = "layer.address";
 pub const LAYER_STREET: &str = "layer.street";
 pub const LAYER_STOP_PLACE: &str = "layer.stopPlace";
 pub const LAYER_GOSP: &str = "layer.groupOfStopPlaces";
+// Name fragment for GroupOfStopPlaces, used to build its legacy.category.* tag.
+pub const GOSP: &str = "GroupOfStopPlaces";
 pub const LAYER_POI: &str = "layer.poi";
 pub const LAYER_PLACE: &str = "layer.place";
 

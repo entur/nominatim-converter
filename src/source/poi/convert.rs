@@ -61,7 +61,7 @@ fn convert_topo_place(config: &Config, tp: &TopographicPlaceXml, usage: &UsageBo
     let indexed_cats = vec![
         SOURCE_POI.to_string(),
         LAYER_POI.to_string(),
-        format!("{COUNTRY_PREFIX}{}", country.name),
+        format!("{COUNTRY_PREFIX}{}", country.alpha2),
         as_category(id),
     ];
 
@@ -86,13 +86,13 @@ fn convert_topo_place(config: &Config, tp: &TopographicPlaceXml, usage: &UsageBo
             address: Address::default(),
             housenumber: None,
             postcode: None,
-            country_code: Some(country.name.clone()),
+            country_code: Some(country.alpha2.clone()),
             centroid: coord.centroid(),
             bbox: coord.bbox(),
             extra: Extra {
                 id: Some(id.to_string()),
                 source: Some("custom-poi".to_string()),
-                country_a: Some(country.three_letter_code),
+                country_a: Some(country.alpha3),
                 ..Default::default()
             },
         }],

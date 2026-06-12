@@ -194,7 +194,7 @@ pub(crate) fn convert_stop_place(
             address: Address { city: locality.clone(), county: county.clone(), ..Default::default() },
             housenumber: None,
             postcode: None,
-            country_code: Some(country.name.clone()),
+            country_code: Some(country.alpha2.clone()),
             centroid: coord.centroid(),
             bbox: coord.bbox(),
             extra: build_stop_extra(
@@ -260,7 +260,7 @@ fn build_stop_categories(
     indexed_cats.push(SOURCE_NSR.to_string());
     indexed_cats.push(LAYER_STOP_PLACE.to_string());
     append_tariff_zone_categories(&mut indexed_cats, sp, fare_zones);
-    indexed_cats.push(format!("{COUNTRY_PREFIX}{}", country.name));
+    indexed_cats.push(format!("{COUNTRY_PREFIX}{}", country.alpha2));
     if let Some(gid) = county_gid { indexed_cats.push(county_ids_category(gid)); }
     if let Some(gid) = locality_gid { indexed_cats.push(locality_ids_category(gid)); }
     if let Some(mc) = multimodal_cat { indexed_cats.push(mc); }
@@ -377,7 +377,7 @@ fn build_stop_extra(
         id: Some(sp.id.clone()),
         source: Some("nsr".to_string()),
         accuracy: Some("point".to_string()),
-        country_a: Some(country.three_letter_code.clone()),
+        country_a: Some(country.alpha3.clone()),
         county_gid: county_gid.clone(),
         locality: locality.clone(),
         locality_gid: locality_gid.clone(),
@@ -428,7 +428,7 @@ pub(crate) fn convert_gosp(
     ];
     let mut indexed_cats = visible_cats.clone();
     indexed_cats.push(SOURCE_NSR.to_string());
-    indexed_cats.push(format!("{COUNTRY_PREFIX}{}", country.name));
+    indexed_cats.push(format!("{COUNTRY_PREFIX}{}", country.alpha2));
     if let Some(gid) = &county_gid { indexed_cats.push(county_ids_category(gid)); }
     if let Some(gid) = &locality_gid { indexed_cats.push(locality_ids_category(gid)); }
     indexed_cats.push(as_category(&gosp.id));
@@ -480,14 +480,14 @@ pub(crate) fn convert_gosp(
             address: Address { city: locality.clone(), county: county.clone(), ..Default::default() },
             housenumber: None,
             postcode: None,
-            country_code: Some(country.name.clone()),
+            country_code: Some(country.alpha2.clone()),
             centroid: coord.centroid(),
             bbox,
             extra: Extra {
                 id: Some(gosp.id.clone()),
                 source: Some("nsr".to_string()),
                 accuracy: Some("point".to_string()),
-                country_a: Some(country.three_letter_code),
+                country_a: Some(country.alpha3),
                 county_gid,
                 locality,
                 locality_gid,
@@ -559,7 +559,7 @@ fn determine_country(
     if let Some(topo_ref) = sp.topographic_place_ref.as_ref()
         && let Some(tp) = topo_places.get(&topo_ref.ref_)
         && let Some(cr) = &tp.country_ref
-        && let Some(c) = Country::parse(Some(&cr.ref_))
+        && let Some(c) = Country::parse(&cr.ref_)
     {
         return c;
     }

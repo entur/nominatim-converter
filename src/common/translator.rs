@@ -112,6 +112,29 @@ pub fn translate(norwegian: &str) -> String {
     result
 }
 
+fn translate_word(word: &str) -> String {
+    let lower = word.to_lowercase();
+    let Some(translation) = DICTIONARY.get(lower.as_str()) else {
+        return word.to_string();
+    };
+    if !word.chars().any(|c| c.is_lowercase()) {
+        return translation.to_uppercase();
+    }
+    if word.starts_with(|c: char| c.is_uppercase()) {
+        return capitalize_first(translation);
+    }
+    translation.to_string()
+}
+
+/// Uppercase the first character, leaving the rest untouched.
+fn capitalize_first(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(first) => format!("{}{}", first.to_uppercase(), chars.as_str()),
+        None => String::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -181,28 +204,5 @@ mod tests {
         assert_eq!(translate("senter"), "center");
         assert_eq!(translate("brygge"), "pier");
         assert_eq!(translate("kai"), "quay");
-    }
-}
-
-fn translate_word(word: &str) -> String {
-    let lower = word.to_lowercase();
-    match DICTIONARY.get(lower.as_str()) {
-        Some(translation) => {
-            if word.chars().all(|c| !c.is_alphabetic() || c.is_uppercase()) {
-                translation.to_uppercase()
-            } else if word.starts_with(|c: char| c.is_uppercase()) {
-                let mut chars = translation.chars();
-                match chars.next() {
-                    Some(first) => {
-                        let upper: String = first.to_uppercase().collect();
-                        format!("{upper}{}", chars.as_str())
-                    }
-                    None => String::new(),
-                }
-            } else {
-                translation.to_string()
-            }
-        }
-        None => word.to_string(),
     }
 }

@@ -9,7 +9,7 @@ use crate::common::extra::Extra;
 use crate::common::geo;
 use crate::common::importance::ImportanceCalculator;
 use crate::common::text::join_osm_values;
-use crate::common::util::titleize;
+use crate::common::text::titleize;
 use crate::config::Config;
 use crate::target::nominatim_id::as_place_id;
 use crate::target::nominatim_place::*;
@@ -255,7 +255,7 @@ impl<'a> OsmEntityConverter<'a> {
             housenumber: None,
             address,
             postcode: None,
-            country_code: country.map(|c| c.name.clone()),
+            country_code: country.map(|c| c.alpha2.clone()),
             centroid: centroid.centroid(),
             bbox: centroid.bbox(),
             extra,
@@ -348,7 +348,7 @@ fn build_extra(
         id: Some(osm_id.to_string()),
         source: Some("openstreetmap".to_string()),
         accuracy: Some(accuracy.to_string()),
-        country_a: country.as_ref().map(|c| c.three_letter_code.clone()),
+        country_a: country.as_ref().map(|c| c.alpha3.clone()),
         county_gid: county_gid.clone(),
         locality: locality.clone(),
         locality_gid: locality_gid.clone(),
@@ -369,7 +369,7 @@ fn build_indexed_categories(
     cats.push(SOURCE_OSM.to_string());
     cats.push(LAYER_POI.to_string());
     if let Some(c) = country {
-        cats.push(format!("{}{}", COUNTRY_PREFIX, c.name));
+        cats.push(format!("{}{}", COUNTRY_PREFIX, c.alpha2));
     }
     if let Some(gid) = county_gid {
         cats.push(county_ids_category(gid));
@@ -396,7 +396,7 @@ pub(crate) fn determine_country(
         .or_else(|| municipality.map(|m| m.country.clone()))
         .or_else(|| {
             tags.get("addr:country")
-                .and_then(|code| Country::parse(Some(code)))
+                .and_then(|code| Country::parse(code))
         })
         .or_else(|| {
             let c = crate::common::coordinate::Coordinate::new(coord.lat, coord.lon);
@@ -415,7 +415,7 @@ pub(crate) fn extract_country_code(tags: &HashMap<&str, &str>) -> Option<Country
 
     if let Some(code) = iso {
         let two_letter = &code[..code.len().min(2)];
-        if let Some(c) = Country::parse(Some(two_letter)) {
+        if let Some(c) = Country::parse(two_letter) {
             return Some(c);
         }
     }
@@ -879,21 +879,21 @@ mod tests {
     fn extract_country_code_from_iso3166_2() {
         let tags = HashMap::from([("ISO3166-2", "NO-03")]);
         let country = extract_country_code(&tags).unwrap();
-        assert_eq!(country.name, "no");
+        assert_eq!(country.alpha2, "no");
     }
 
     #[test]
     fn extract_country_code_from_country_code_tag() {
         let tags = HashMap::from([("country_code", "NO")]);
         let country = extract_country_code(&tags).unwrap();
-        assert_eq!(country.name, "no");
+        assert_eq!(country.alpha2, "no");
     }
 
     #[test]
     fn extract_country_code_from_numeric_ref_assumes_norway() {
         let tags = HashMap::from([("ref", "0301")]);
         let country = extract_country_code(&tags).unwrap();
-        assert_eq!(country.name, "no");
+        assert_eq!(country.alpha2, "no");
     }
 
     #[test]

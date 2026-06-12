@@ -1,22 +1,29 @@
+/// A Norwegian county as used in Geonorge download URLs.
+/// `slug` is "{code}_{name}" (ASCII-folded) as it appears in URLs.
+pub struct County {
+    pub code: &'static str,
+    pub name: &'static str,
+    pub slug: &'static str,
+}
+
 /// Norwegian county codes and names as used in Geonorge download URLs.
-/// Format: (code, name, geonorge_slug) where slug is "{code}_{name}" as it appears in URLs.
-pub const COUNTIES: &[(&str, &str, &str)] = &[
-    ("03", "Oslo", "03_Oslo"),
-    ("11", "Rogaland", "11_Rogaland"),
-    ("15", "Møre og Romsdal", "15_More-og-Romsdal"),
-    ("18", "Nordland", "18_Nordland"),
-    ("21", "Svalbard", "21_Svalbard"),
-    ("31", "Østfold", "31_Ostfold"),
-    ("32", "Akershus", "32_Akershus"),
-    ("33", "Buskerud", "33_Buskerud"),
-    ("34", "Innlandet", "34_Innlandet"),
-    ("38", "Vestfold", "38_Vestfold"),
-    ("39", "Telemark", "39_Telemark"),
-    ("40", "Agder", "40_Agder"),
-    ("42", "Vestland", "42_Vestland"),
-    ("50", "Trøndelag", "50_Trondelag"),
-    ("55", "Troms", "55_Troms"),
-    ("56", "Finnmark", "56_Finnmark"),
+pub const COUNTIES: &[County] = &[
+    County { code: "03", name: "Oslo", slug: "03_Oslo" },
+    County { code: "11", name: "Rogaland", slug: "11_Rogaland" },
+    County { code: "15", name: "Møre og Romsdal", slug: "15_More-og-Romsdal" },
+    County { code: "18", name: "Nordland", slug: "18_Nordland" },
+    County { code: "21", name: "Svalbard", slug: "21_Svalbard" },
+    County { code: "31", name: "Østfold", slug: "31_Ostfold" },
+    County { code: "32", name: "Akershus", slug: "32_Akershus" },
+    County { code: "33", name: "Buskerud", slug: "33_Buskerud" },
+    County { code: "34", name: "Innlandet", slug: "34_Innlandet" },
+    County { code: "38", name: "Vestfold", slug: "38_Vestfold" },
+    County { code: "39", name: "Telemark", slug: "39_Telemark" },
+    County { code: "40", name: "Agder", slug: "40_Agder" },
+    County { code: "42", name: "Vestland", slug: "42_Vestland" },
+    County { code: "50", name: "Trøndelag", slug: "50_Trondelag" },
+    County { code: "55", name: "Troms", slug: "55_Troms" },
+    County { code: "56", name: "Finnmark", slug: "56_Finnmark" },
 ];
 
 /// Resolve a region argument to a Geonorge URL slug.
@@ -29,13 +36,13 @@ pub fn resolve_geonorge_region(arg: &str) -> Result<String, String> {
     }
 
     // Try exact code match
-    if let Some((_, _, slug)) = COUNTIES.iter().find(|(code, _, _)| *code == arg) {
-        return Ok(slug.to_string());
+    if let Some(county) = COUNTIES.iter().find(|c| c.code == arg) {
+        return Ok(county.slug.to_string());
     }
 
     // Try case-insensitive name match
-    if let Some((_, _, slug)) = COUNTIES.iter().find(|(_, name, _)| name.to_lowercase() == lower) {
-        return Ok(slug.to_string());
+    if let Some(county) = COUNTIES.iter().find(|c| c.name.to_lowercase() == lower) {
+        return Ok(county.slug.to_string());
     }
 
     Err(format!("Unknown region '{arg}'. Use a county code (e.g. 03), name (e.g. Oslo), or 'all' for all of Norway."))
@@ -45,8 +52,8 @@ pub fn list_regions() {
     // A listing the user reads or pipes, so it goes to stdout.
     println!("Available regions for Geonorge download:");
     println!("  all / 0000  All of Norway (large download)");
-    for (code, name, _) in COUNTIES {
-        println!("  {code:<10}{name}");
+    for county in COUNTIES {
+        println!("  {:<10}{}", county.code, county.name);
     }
 }
 

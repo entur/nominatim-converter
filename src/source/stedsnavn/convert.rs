@@ -6,7 +6,7 @@ use crate::common::geo;
 use crate::common::importance::ImportanceCalculator;
 use crate::common::text::join_osm_values;
 use crate::common::usage::UsageBoost;
-use crate::common::util::titleize;
+use crate::common::text::titleize;
 use crate::config::{Config, StedsnavnConfig};
 use crate::target::json_writer::JsonWriter;
 use crate::target::nominatim_id::as_place_id;
@@ -78,7 +78,7 @@ pub(crate) fn convert_to_nominatim(entry: &StedsnavnEntry, stedsnavn: &Stedsnavn
     let mut indexed_cats = visible_cats.clone();
     indexed_cats.push(SOURCE_STEDSNAVN.to_string());
     indexed_cats.push(LAYER_PLACE.to_string());
-    indexed_cats.push(format!("{COUNTRY_PREFIX}{}", country.name));
+    indexed_cats.push(format!("{COUNTRY_PREFIX}{}", country.alpha2));
     indexed_cats.push(county_ids_category(&county_gid));
     indexed_cats.push(locality_ids_category(&locality_gid));
     indexed_cats.push(as_category(&id));
@@ -112,14 +112,14 @@ pub(crate) fn convert_to_nominatim(entry: &StedsnavnEntry, stedsnavn: &Stedsnavn
             },
             housenumber: None,
             postcode: None,
-            country_code: Some(country.name.clone()),
+            country_code: Some(country.alpha2.clone()),
             centroid: coord.centroid(),
             bbox: coord.bbox(),
             extra: Extra {
                 id: Some(id.clone()),
                 source: Some("kartverket-stedsnavn".to_string()),
                 accuracy: Some("point".to_string()),
-                country_a: Some(country.three_letter_code),
+                country_a: Some(country.alpha3),
                 county_gid: Some(county_gid),
                 locality: Some(entry.kommunenavn.clone()),
                 locality_gid: Some(locality_gid),

@@ -52,9 +52,11 @@ static BOUNDARIES: LazyLock<CountryBoundaries> = LazyLock::new(|| {
 pub fn get_country(coord: &Coordinate) -> Option<Country> {
     let latlon = LatLon::new(coord.lat, coord.lon).ok()?;
     let ids = BOUNDARIES.ids(latlon);
+    // BOUNDARIES.ids may return ISO 3166-2 subdivision codes (e.g. "NO-50")
+    // alongside the country ("NO"); only the 2-char country code is wanted.
     ids.iter()
         .find(|id| id.len() == 2)
-        .and_then(|id| Country::parse(Some(id)))
+        .and_then(|id| Country::parse(id))
 }
 
 #[cfg(test)]
@@ -65,21 +67,21 @@ mod tests {
     fn test_zagreb_is_croatia() {
         let coord = Coordinate::new(45.803417, 15.992278);
         let country = get_country(&coord);
-        assert_eq!(country.unwrap().name, "hr");
+        assert_eq!(country.unwrap().alpha2, "hr");
     }
 
     #[test]
     fn test_oslo_is_norway() {
         let coord = Coordinate::new(59.9139, 10.7522);
         let country = get_country(&coord);
-        assert_eq!(country.unwrap().name, "no");
+        assert_eq!(country.unwrap().alpha2, "no");
     }
 
     #[test]
     fn test_stockholm_is_sweden() {
         let coord = Coordinate::new(59.3293, 18.0686);
         let country = get_country(&coord);
-        assert_eq!(country.unwrap().name, "se");
+        assert_eq!(country.unwrap().alpha2, "se");
     }
 
     #[test]

@@ -2,8 +2,6 @@ mod convert;
 mod popularity;
 pub(crate) mod xml;
 
-// Re-export for external use (poi.rs uses read_element_as_string)
-pub use xml::read_element_as_string;
 
 pub fn convert(
     config: &crate::config::Config,

@@ -44,9 +44,12 @@ impl UsageBoost {
                 continue;
             }
             let parts: Vec<&str> = line.split(';').collect();
+            // Deliberate asymmetry: a line with fewer than 2 fields can't carry an
+            // id+usage pair, so it is skipped like a blank line, while a malformed
+            // usage number below is a hard error.
             if parts.len() < 2 { continue; }
             let id = parts[0].trim();
-            let usage_str = parts[parts.len() - 1].trim();
+            let usage_str = parts.last().expect("len >= 2 checked above").trim();
             let usage: u64 = match usage_str.parse() {
                 Ok(n) => n,
                 // Tolerate a non-numeric first row as a header.
