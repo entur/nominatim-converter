@@ -6,13 +6,12 @@ use std::path::{Path, PathBuf};
 /// source, omit its section entirely. `groupOfStopPlaces` and `usage` are tuning, not sources,
 /// so they default when omitted.
 #[derive(Deserialize, Clone, Default)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct Config {
     pub osm: Option<OsmConfig>,
     pub stedsnavn: Option<StedsnavnConfig>,
     pub matrikkel: Option<MatrikkelConfig>,
     pub poi: Option<PoiConfig>,
-    #[serde(rename = "stopPlace")]
     pub stop_place: Option<StopPlaceConfig>,
     pub belagenhet: Option<BelagenhetConfig>,
     /// Usage-driven popularity boost. Like a source section: present only to enable the
@@ -45,13 +44,13 @@ pub enum SourceInput {
 // Unset means no check; the `--min-lines` CLI flag overrides it per run.
 
 #[derive(Deserialize, Clone, Debug)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct UsageConfig {
     /// Where the usage CSV lives. Required when the `usage` section is present.
     pub input: SourceInput,
     #[serde(default = "default_usage_alpha")]
     pub alpha: f64,
-    #[serde(rename = "usageFloor", default = "default_usage_floor")]
+    #[serde(default = "default_usage_floor")]
     pub usage_floor: u64,
 }
 
@@ -59,15 +58,13 @@ fn default_usage_alpha() -> f64 { crate::common::usage::DEFAULT_ALPHA }
 fn default_usage_floor() -> u64 { crate::common::usage::DEFAULT_USAGE_FLOOR }
 
 #[derive(Deserialize, Clone)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct OsmConfig {
     pub input: SourceInput,
-    #[serde(rename = "defaultValue")]
     pub default_value: f64,
-    #[serde(rename = "rankAddress")]
     pub rank_address: RankAddress,
     pub filters: Vec<PoiFilter>,
-    #[serde(rename = "minLines", default)]
+    #[serde(default)]
     pub min_lines: Option<usize>,
 }
 
@@ -82,78 +79,68 @@ pub struct RankAddress {
 }
 
 #[derive(Deserialize, Clone)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct PoiFilter {
     pub key: String,
     pub value: String,
     pub priority: i32,
     /// When true, substitute an associated entrance/gate coordinate for the polygon centroid of
     /// matching large-area features (those at least `MIN_AREA_SIZE_METERS` across). Off by default.
-    #[serde(rename = "useEntrance", default)]
+    #[serde(default)]
     pub use_entrance: bool,
 }
 
 #[derive(Deserialize, Clone)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct StedsnavnConfig {
     pub input: SourceInput,
-    #[serde(rename = "defaultValue")]
     pub default_value: f64,
-    #[serde(rename = "rankAddress")]
     pub rank_address: i32,
-    #[serde(rename = "minLines", default)]
+    #[serde(default)]
     pub min_lines: Option<usize>,
 }
 
 #[derive(Deserialize, Clone)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct MatrikkelConfig {
     pub input: SourceInput,
-    #[serde(rename = "addressPopularity")]
     pub address_popularity: f64,
-    #[serde(rename = "streetPopularity")]
     pub street_popularity: f64,
-    #[serde(rename = "rankAddress")]
     pub rank_address: i32,
-    #[serde(rename = "minLines", default)]
+    #[serde(default)]
     pub min_lines: Option<usize>,
 }
 
 #[derive(Deserialize, Clone)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct PoiConfig {
     pub input: SourceInput,
     pub importance: f64,
-    #[serde(rename = "rankAddress")]
     pub rank_address: i32,
-    #[serde(rename = "minLines", default)]
+    #[serde(default)]
     pub min_lines: Option<usize>,
 }
 
 #[derive(Deserialize, Clone)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct StopPlaceConfig {
     pub input: SourceInput,
-    #[serde(rename = "defaultValue")]
     pub default_value: i64,
-    #[serde(rename = "rankAddress")]
     pub rank_address: i32,
-    #[serde(rename = "stopTypeFactors")]
     pub stop_type_factors: std::collections::HashMap<String, f64>,
-    #[serde(rename = "interchangeFactors")]
     pub interchange_factors: std::collections::HashMap<String, f64>,
     /// Group-of-stop-places tuning. GoSPs are parsed from the same StopPlace NeTEx input and
     /// only this converter consumes them, so their config lives here. Defaults when omitted.
-    #[serde(rename = "groupOfStopPlaces", default)]
+    #[serde(default)]
     pub group_of_stop_places: GroupOfStopPlacesConfig,
-    #[serde(rename = "minLines", default)]
+    #[serde(default)]
     pub min_lines: Option<usize>,
 }
 
 #[derive(Deserialize, Clone)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct GroupOfStopPlacesConfig {
-    #[serde(rename = "rankAddress", default = "default_gosp_rank")]
+    #[serde(default = "default_gosp_rank")]
     pub rank_address: i32,
     /// Explicit list of GoSP IDs to demote in autocomplete. Each listed GoSP gets its
     /// importance capped to `SECONDARY_GOSP_IMPORTANCE` and its `rank_address` set to 0,
@@ -164,7 +151,7 @@ pub struct GroupOfStopPlacesConfig {
     /// count, then name=locality match) and rejected, because the only known false-positive
     /// class (a canonical city GoSP that happens to have a sibling) is hard to distinguish
     /// from a real redundant aggregator.
-    #[serde(rename = "secondaryGosps", default)]
+    #[serde(default)]
     pub secondary_gosps: Vec<String>,
 }
 
@@ -177,22 +164,35 @@ impl Default for GroupOfStopPlacesConfig {
 }
 
 #[derive(Deserialize, Clone)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct BelagenhetConfig {
     pub input: SourceInput,
-    #[serde(rename = "addressPopularity", default = "default_belagenhet_address_pop")]
+    #[serde(default = "default_belagenhet_address_pop")]
     pub address_popularity: f64,
-    #[serde(rename = "streetPopularity", default = "default_belagenhet_street_pop")]
+    #[serde(default = "default_belagenhet_street_pop")]
     pub street_popularity: f64,
-    #[serde(rename = "rankAddress", default = "default_belagenhet_rank")]
+    #[serde(default = "default_belagenhet_rank")]
     pub rank_address: i32,
-    #[serde(rename = "minLines", default)]
+    #[serde(default)]
     pub min_lines: Option<usize>,
 }
 
 fn default_belagenhet_address_pop() -> f64 { 20.0 }
 fn default_belagenhet_street_pop() -> f64 { 20.0 }
 fn default_belagenhet_rank() -> i32 { 26 }
+
+impl Config {
+    /// Load and parse the converter configuration file (defaults to `converter.json`).
+    pub fn load(path: Option<&Path>) -> Result<Self, Box<dyn std::error::Error>> {
+        let path = path.unwrap_or_else(|| Path::new("converter.json"));
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| format!("Cannot read config file '{}': {e}", path.display()))?;
+        let config: Config = serde_json::from_str(&content)
+            .map_err(|e| format!("Invalid config '{}': {e}", path.display()))?;
+        eprintln!("Loaded configuration from: {}", path.display());
+        Ok(config)
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -333,25 +333,5 @@ mod tests {
         let json = r#"{ "poi": { "importance": 0.5, "rankAddress": 30 } }"#;
         let result: Result<Config, _> = serde_json::from_str(json);
         assert!(result.is_err(), "poi section without input should fail to parse");
-    }
-}
-
-impl Config {
-    /// Load and parse the converter configuration file.
-    ///
-    /// Returns `Result<Self, Box<dyn std::error::Error>>` -- this is a common Rust pattern
-    /// for CLI tools where the caller only needs to display the error, not match on specific
-    /// variants. `Box<dyn Error>` is a trait object that can hold any error type. The `?`
-    /// operator below automatically converts specific errors (IO, JSON parse) into this
-    /// boxed form and returns early -- similar to a thrown exception, but checked at
-    /// compile time.
-    pub fn load(path: Option<&Path>) -> Result<Self, Box<dyn std::error::Error>> {
-        let path = path.unwrap_or_else(|| Path::new("converter.json"));
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| format!("Cannot read config file '{}': {e}", path.display()))?;
-        let config: Config = serde_json::from_str(&content)
-            .map_err(|e| format!("Invalid config '{}': {e}", path.display()))?;
-        eprintln!("Loaded configuration from: {}", path.display());
-        Ok(config)
     }
 }

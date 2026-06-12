@@ -25,17 +25,14 @@ impl Serialize for RawNumber {
 /// places and emits them as raw JSON numbers (not strings). This is needed because serde's
 /// default float serialization omits trailing zeros and may use different precision.
 mod vec_f64_6dp {
+    use super::RawNumber;
     use serde::ser::SerializeSeq;
     use serde::Serializer;
 
     pub fn serialize<S: Serializer>(vals: &[f64], s: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::Error;
         let mut seq = s.serialize_seq(Some(vals.len()))?;
-        for val in vals {
-            let formatted = format!("{:.6}", val);
-            let raw: Box<serde_json::value::RawValue> =
-                serde_json::value::RawValue::from_string(formatted).map_err(S::Error::custom)?;
-            seq.serialize_element(&*raw)?;
+        for &val in vals {
+            seq.serialize_element(&RawNumber::from_f64_6dp(val))?;
         }
         seq.end()
     }

@@ -16,11 +16,20 @@ impl JsonWriter {
             std::fs::create_dir_all(parent)?;
         }
 
-        let needs_header = !is_appending || !output.exists() || std::fs::metadata(output).map(|m| m.len() == 0).unwrap_or(true);
+        // A missing or empty file needs the header even when appending (a metadata error
+        // means the file does not exist, hence unwrap_or(true)).
+        let file_is_empty = std::fs::metadata(output).map(|m| m.len() == 0).unwrap_or(true);
+        let needs_header = !is_appending || file_is_empty;
 
         let file = if needs_header {
-            let f = File::create(output)?;
-            let mut writer = BufWriter::new(f);
+            File::create(output)?
+        } else {
+            // Only reached when the file already exists and has content.
+            OpenOptions::new().append(true).open(output)?
+        };
+        let mut writer = BufWriter::new(file);
+
+        if needs_header {
             let header = NominatimHeader {
                 type_: "NominatimDumpFile".to_string(),
                 content: HeaderContent {
@@ -36,12 +45,9 @@ impl JsonWriter {
             };
             serde_json::to_writer(&mut writer, &header)?;
             writeln!(writer)?;
-            writer.into_inner()?
-        } else {
-            OpenOptions::new().create(true).append(true).open(output)?
-        };
+        }
 
-        Ok(Self { writer: BufWriter::new(file), count: 0 })
+        Ok(Self { writer, count: 0 })
     }
 
     /// Write a single entry to the output.

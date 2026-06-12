@@ -32,6 +32,25 @@ fn run_converter(args: &[&str]) -> (bool, String, String) {
     (output.status.success(), stdout, stderr)
 }
 
+/// Run the standard single-source invocation `<subcmd> -i <fixture> -o <temp out> -c
+/// <example config> -f` and return (success, stderr, output path). Tests with extra or
+/// different flags (append mode, --min-lines, missing args, build) call `run_converter`
+/// directly.
+fn convert_fixture(subcmd: &str, fixture: &str, tag: &str) -> (bool, String, PathBuf) {
+    let output = temp_output(tag);
+    let (success, _, stderr) = run_converter(&[
+        subcmd,
+        "-i",
+        test_data(fixture).to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+        "-c",
+        config_path().to_str().unwrap(),
+        "-f",
+    ]);
+    (success, stderr, output)
+}
+
 fn read_ndjson(path: &Path) -> Vec<serde_json::Value> {
     let content = std::fs::read_to_string(path).expect("failed to read output");
     content
@@ -261,17 +280,7 @@ fn output_file_exists_without_force_fails() {
 
 #[test]
 fn stopplace_produces_valid_ndjson() {
-    let output = temp_output("stopplace-valid");
-    let (success, _, stderr) = run_converter(&[
-        "stopplace",
-        "-i",
-        test_data("stopPlaces.xml").to_str().unwrap(),
-        "-o",
-        output.to_str().unwrap(),
-        "-c",
-        config_path().to_str().unwrap(),
-        "-f",
-    ]);
+    let (success, stderr, output) = convert_fixture("stopplace", "stopPlaces.xml", "stopplace-valid");
     assert!(success, "stopplace failed: {stderr}");
 
     let lines = read_ndjson(&output);
@@ -332,17 +341,7 @@ fn min_lines_met_succeeds() {
 
 #[test]
 fn stopplace_entries_have_required_fields() {
-    let output = temp_output("stopplace-fields");
-    let (success, _, stderr) = run_converter(&[
-        "stopplace",
-        "-i",
-        test_data("stopPlaces.xml").to_str().unwrap(),
-        "-o",
-        output.to_str().unwrap(),
-        "-c",
-        config_path().to_str().unwrap(),
-        "-f",
-    ]);
+    let (success, stderr, output) = convert_fixture("stopplace", "stopPlaces.xml", "stopplace-fields");
     assert!(success, "stopplace failed: {stderr}");
 
     let lines = read_ndjson(&output);
@@ -371,17 +370,7 @@ fn stopplace_entries_have_required_fields() {
 
 #[test]
 fn stopplace_has_groups_and_stops() {
-    let output = temp_output("stopplace-groups");
-    let (success, _, _) = run_converter(&[
-        "stopplace",
-        "-i",
-        test_data("stopPlaces.xml").to_str().unwrap(),
-        "-o",
-        output.to_str().unwrap(),
-        "-c",
-        config_path().to_str().unwrap(),
-        "-f",
-    ]);
+    let (success, _, output) = convert_fixture("stopplace", "stopPlaces.xml", "stopplace-groups");
     assert!(success);
 
     let lines = read_ndjson(&output);
@@ -402,17 +391,7 @@ fn stopplace_has_groups_and_stops() {
 
 #[test]
 fn poi_produces_valid_ndjson() {
-    let output = temp_output("poi-valid");
-    let (success, _, stderr) = run_converter(&[
-        "poi",
-        "-i",
-        test_data("poi-test.xml").to_str().unwrap(),
-        "-o",
-        output.to_str().unwrap(),
-        "-c",
-        config_path().to_str().unwrap(),
-        "-f",
-    ]);
+    let (success, stderr, output) = convert_fixture("poi", "poi-test.xml", "poi-valid");
     assert!(success, "poi failed: {stderr}");
 
     let lines = read_ndjson(&output);
@@ -433,17 +412,7 @@ fn poi_produces_valid_ndjson() {
 
 #[test]
 fn poi_filters_expired_entries() {
-    let output = temp_output("poi-expired");
-    let (success, _, _) = run_converter(&[
-        "poi",
-        "-i",
-        test_data("poi-test.xml").to_str().unwrap(),
-        "-o",
-        output.to_str().unwrap(),
-        "-c",
-        config_path().to_str().unwrap(),
-        "-f",
-    ]);
+    let (success, _, output) = convert_fixture("poi", "poi-test.xml", "poi-expired");
     assert!(success);
 
     let content = std::fs::read_to_string(&output).unwrap();
@@ -467,17 +436,7 @@ fn poi_filters_expired_entries() {
 
 #[test]
 fn stedsnavn_produces_valid_ndjson() {
-    let output = temp_output("stedsnavn-valid");
-    let (success, _, stderr) = run_converter(&[
-        "stedsnavn",
-        "-i",
-        test_data("bydel.gml").to_str().unwrap(),
-        "-o",
-        output.to_str().unwrap(),
-        "-c",
-        config_path().to_str().unwrap(),
-        "-f",
-    ]);
+    let (success, stderr, output) = convert_fixture("stedsnavn", "bydel.gml", "stedsnavn-valid");
     assert!(success, "stedsnavn failed: {stderr}");
 
     let lines = read_ndjson(&output);
@@ -495,17 +454,7 @@ fn stedsnavn_produces_valid_ndjson() {
 
 #[test]
 fn stedsnavn_preserves_norwegian_diacritics() {
-    let output = temp_output("stedsnavn-diacritics");
-    let (success, _, _) = run_converter(&[
-        "stedsnavn",
-        "-i",
-        test_data("bydel.gml").to_str().unwrap(),
-        "-o",
-        output.to_str().unwrap(),
-        "-c",
-        config_path().to_str().unwrap(),
-        "-f",
-    ]);
+    let (success, _, output) = convert_fixture("stedsnavn", "bydel.gml", "stedsnavn-diacritics");
     assert!(success);
 
     let content = std::fs::read_to_string(&output).unwrap();
@@ -621,17 +570,7 @@ fn matrikkel_without_gml_or_flag_fails() {
 
 #[test]
 fn belagenhet_produces_valid_ndjson() {
-    let output = temp_output("belagenhet-valid");
-    let (success, _, stderr) = run_converter(&[
-        "belagenhet",
-        "-i",
-        test_data("belagenhetsadresser_kn0305.gpkg").to_str().unwrap(),
-        "-o",
-        output.to_str().unwrap(),
-        "-c",
-        config_path().to_str().unwrap(),
-        "-f",
-    ]);
+    let (success, stderr, output) = convert_fixture("belagenhet", "belagenhetsadresser_kn0305.gpkg", "belagenhet-valid");
     assert!(success, "belagenhet failed: {stderr}");
 
     let lines = read_ndjson(&output);
@@ -651,17 +590,7 @@ fn belagenhet_produces_valid_ndjson() {
 
 #[test]
 fn belagenhet_has_addresses_and_streets() {
-    let output = temp_output("belagenhet-types");
-    let (success, _, _) = run_converter(&[
-        "belagenhet",
-        "-i",
-        test_data("belagenhetsadresser_kn0305.gpkg").to_str().unwrap(),
-        "-o",
-        output.to_str().unwrap(),
-        "-c",
-        config_path().to_str().unwrap(),
-        "-f",
-    ]);
+    let (success, _, output) = convert_fixture("belagenhet", "belagenhetsadresser_kn0305.gpkg", "belagenhet-types");
     assert!(success);
 
     let lines = read_ndjson(&output);
@@ -696,17 +625,7 @@ fn belagenhet_has_addresses_and_streets() {
 
 #[test]
 fn belagenhet_filters_non_current_addresses() {
-    let output = temp_output("belagenhet-filter");
-    let (success, _, _) = run_converter(&[
-        "belagenhet",
-        "-i",
-        test_data("belagenhetsadresser_kn0305.gpkg").to_str().unwrap(),
-        "-o",
-        output.to_str().unwrap(),
-        "-c",
-        config_path().to_str().unwrap(),
-        "-f",
-    ]);
+    let (success, _, output) = convert_fixture("belagenhet", "belagenhetsadresser_kn0305.gpkg", "belagenhet-filter");
     assert!(success);
 
     let content = std::fs::read_to_string(&output).unwrap();
@@ -728,17 +647,7 @@ fn belagenhet_filters_non_current_addresses() {
 
 #[test]
 fn belagenhet_entries_have_valid_coordinates() {
-    let output = temp_output("belagenhet-coords");
-    let (success, _, _) = run_converter(&[
-        "belagenhet",
-        "-i",
-        test_data("belagenhetsadresser_kn0305.gpkg").to_str().unwrap(),
-        "-o",
-        output.to_str().unwrap(),
-        "-c",
-        config_path().to_str().unwrap(),
-        "-f",
-    ]);
+    let (success, _, output) = convert_fixture("belagenhet", "belagenhetsadresser_kn0305.gpkg", "belagenhet-coords");
     assert!(success);
 
     let lines = read_ndjson(&output);
@@ -758,17 +667,7 @@ fn belagenhet_entries_have_valid_coordinates() {
 
 #[test]
 fn belagenhet_entries_have_correct_source() {
-    let output = temp_output("belagenhet-source");
-    let (success, _, _) = run_converter(&[
-        "belagenhet",
-        "-i",
-        test_data("belagenhetsadresser_kn0305.gpkg").to_str().unwrap(),
-        "-o",
-        output.to_str().unwrap(),
-        "-c",
-        config_path().to_str().unwrap(),
-        "-f",
-    ]);
+    let (success, _, output) = convert_fixture("belagenhet", "belagenhetsadresser_kn0305.gpkg", "belagenhet-source");
     assert!(success);
 
     let lines = read_ndjson(&output);
@@ -782,17 +681,7 @@ fn belagenhet_entries_have_correct_source() {
 
 #[test]
 fn belagenhet_housenumber_with_letter_suffix() {
-    let output = temp_output("belagenhet-hn");
-    let (success, _, _) = run_converter(&[
-        "belagenhet",
-        "-i",
-        test_data("belagenhetsadresser_kn0305.gpkg").to_str().unwrap(),
-        "-o",
-        output.to_str().unwrap(),
-        "-c",
-        config_path().to_str().unwrap(),
-        "-f",
-    ]);
+    let (success, _, output) = convert_fixture("belagenhet", "belagenhetsadresser_kn0305.gpkg", "belagenhet-hn");
     assert!(success);
 
     let content = std::fs::read_to_string(&output).unwrap();
@@ -850,19 +739,10 @@ fn append_mode_does_not_duplicate_header() {
 
 #[test]
 fn force_flag_overwrites_existing_output() {
-    let output = temp_output("force-overwrite");
-    std::fs::write(&output, "garbage content").unwrap();
+    // temp_output is deterministic per tag, so the helper reuses this exact path.
+    std::fs::write(temp_output("force-overwrite"), "garbage content").unwrap();
 
-    let (success, _, _) = run_converter(&[
-        "poi",
-        "-i",
-        test_data("poi-test.xml").to_str().unwrap(),
-        "-o",
-        output.to_str().unwrap(),
-        "-c",
-        config_path().to_str().unwrap(),
-        "-f",
-    ]);
+    let (success, _, output) = convert_fixture("poi", "poi-test.xml", "force-overwrite");
     assert!(success);
 
     let content = std::fs::read_to_string(&output).unwrap();
@@ -876,17 +756,7 @@ fn force_flag_overwrites_existing_output() {
 
 #[test]
 fn all_centroids_are_valid_coordinates() {
-    let output = temp_output("centroids-valid");
-    let (success, _, _) = run_converter(&[
-        "stopplace",
-        "-i",
-        test_data("stopPlaces.xml").to_str().unwrap(),
-        "-o",
-        output.to_str().unwrap(),
-        "-c",
-        config_path().to_str().unwrap(),
-        "-f",
-    ]);
+    let (success, _, output) = convert_fixture("stopplace", "stopPlaces.xml", "centroids-valid");
     assert!(success);
 
     let lines = read_ndjson(&output);

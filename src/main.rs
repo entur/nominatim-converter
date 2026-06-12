@@ -108,30 +108,14 @@ struct BuildArgs {
 
 #[derive(Parser)]
 struct MatrikkelArgs {
-    /// Input CSV file (ZIP archives are extracted automatically)
-    #[arg(short, long)]
-    input: PathBuf,
-    /// Output file
-    #[arg(short, long)]
-    output: PathBuf,
+    #[command(flatten)]
+    convert: ConvertArgs,
     /// Stedsnavn GML file for county data
     #[arg(short = 'g', long = "gml", value_name = "GML")]
     stedsnavn_gml: Option<PathBuf>,
     /// Skip county population
     #[arg(short = 'n', long = "no-county", default_value_t = false)]
     no_county: bool,
-    /// Configuration file (defaults to converter.json)
-    #[arg(short, long)]
-    config: Option<PathBuf>,
-    /// Append to existing output file
-    #[arg(short, long, default_value_t = false)]
-    append: bool,
-    /// Force overwrite if output file exists
-    #[arg(short, long, default_value_t = false)]
-    force: bool,
-    /// Abort if fewer than N entries are written (overrides the per-source config minLines).
-    #[arg(long = "min-lines", value_name = "N")]
-    min_lines: Option<usize>,
 }
 
 fn main() {
@@ -155,38 +139,7 @@ fn main() {
     let result = match action {
         Action::Build(args) => run_build(args, &cache, usage_csv),
         Action::Stopplace(args) => run_conversion("StopPlace", args, Some("*.xml"), &cache, usage_csv, |cfg| cfg.stop_place.as_ref().and_then(|s| s.min_lines), source::stopplace::convert),
-        Action::Matrikkel(args) => {
-            let gml_resolved = if args.no_county {
-                None
-            } else {
-                match args.stedsnavn_gml.as_ref() {
-                    Some(gml) => match resolve_input(gml, Some("*.gml"), &cache) {
-                        Ok(r) => Some(r),
-                        Err(e) => {
-                            eprintln!("Error resolving GML input: {e}");
-                            std::process::exit(1);
-                        }
-                    },
-                    None => {
-                        eprintln!("Error: matrikkel requires -g <stedsnavn.gml> for county data, or --no-county to skip it.");
-                        std::process::exit(1);
-                    }
-                }
-            };
-            let gml_path = gml_resolved.as_ref().map(ResolvedInput::path);
-            let convert_args = ConvertArgs {
-                input: args.input,
-                output: args.output,
-                config: args.config,
-                append: args.append,
-                force: args.force,
-                min_lines: args.min_lines,
-            };
-            run_conversion("Matrikkel", convert_args, Some("*.csv"), &cache, usage_csv, |cfg| cfg.matrikkel.as_ref().and_then(|s| s.min_lines), |cfg, input, output, append, usage| {
-                source::matrikkel::convert(cfg, input, output, append, gml_path, usage)
-            })
-            // gml_resolved drops here; if temp, its file is cleaned up automatically.
-        }
+        Action::Matrikkel(args) => run_matrikkel(args, &cache, usage_csv),
         Action::Osm(args) => run_conversion("OSM PBF", args, None, &cache, usage_csv, |cfg| cfg.osm.as_ref().and_then(|s| s.min_lines), source::osm::convert),
         Action::Stedsnavn(args) => run_conversion("Stedsnavn", args, Some("*.gml"), &cache, usage_csv, |cfg| cfg.stedsnavn.as_ref().and_then(|s| s.min_lines), source::stedsnavn::convert),
         Action::Poi(args) => run_conversion("POI", args, None, &cache, usage_csv, |cfg| cfg.poi.as_ref().and_then(|s| s.min_lines), source::poi::convert),
@@ -306,6 +259,34 @@ where
     Ok(())
 }
 
+/// Matrikkel needs an extra input next to the usual conversion args: the stedsnavn GML for
+/// county data (or `--no-county` to skip it). Resolve that here, then defer to the shared
+/// `run_conversion` plumbing.
+fn run_matrikkel(
+    args: MatrikkelArgs,
+    cache: &CacheOptions,
+    usage_csv: Option<&Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let gml_resolved = if args.no_county {
+        None
+    } else {
+        match args.stedsnavn_gml.as_ref() {
+            Some(gml) => Some(
+                resolve_input(gml, Some("*.gml"), cache)
+                    .map_err(|e| format!("resolving GML input: {e}"))?,
+            ),
+            None => {
+                return Err("matrikkel requires -g <stedsnavn.gml> for county data, or --no-county to skip it.".into());
+            }
+        }
+    };
+    let gml_path = gml_resolved.as_ref().map(ResolvedInput::path);
+    run_conversion("Matrikkel", args.convert, Some("*.csv"), cache, usage_csv, |cfg| cfg.matrikkel.as_ref().and_then(|s| s.min_lines), |cfg, input, output, append, usage| {
+        source::matrikkel::convert(cfg, input, output, append, gml_path, usage)
+    })
+    // gml_resolved drops here; if temp, its file is cleaned up automatically.
+}
+
 /// Download each municipality's belägenhetsadresser and append them into `output`.
 /// Called only from `build`, which has already prepared the output file, so every
 /// municipality appends (the first one creates the file via `JsonWriter`'s header logic).
@@ -403,7 +384,7 @@ fn run_build(args: BuildArgs, cache: &CacheOptions, usage_csv: Option<&Path>) ->
     if let Some(belagenhet) = cfg.belagenhet.as_ref() {
         match &belagenhet.input {
             SourceInput::Municipality(spec) => {
-                let codes = resolve_municipality_codes(std::slice::from_ref(spec));
+                let codes = resolve_municipality_codes(spec);
                 if needs_belagenhet_credentials(cache, &codes) {
                     preflight_check_credentials("LANTMATERIET_USER");
                     preflight_check_credentials("LANTMATERIET_PASS");
@@ -499,34 +480,30 @@ fn list_swedish_municipalities() {
     }
 }
 
-/// Expand municipality arguments: "all" becomes all 290 codes, county prefixes (2-digit)
-/// expand to all municipalities in that county, otherwise codes are passed through as-is.
-fn resolve_municipality_codes(args: &[String]) -> Vec<String> {
+/// Expand a municipality spec: "all" becomes all 290 codes, a county prefix (2-digit)
+/// expands to all municipalities in that county, otherwise the code is passed through as-is.
+fn resolve_municipality_codes(spec: &str) -> Vec<String> {
     use source::belagenhet::municipalities::MUNICIPALITIES;
 
-    let mut codes = Vec::new();
-    for arg in args {
-        let lower = arg.to_lowercase();
-        if lower == "all" || lower == "00" {
-            eprintln!("Expanding 'all' to all {} municipalities", MUNICIPALITIES.len());
-            return MUNICIPALITIES.iter().map(|(c, _)| c.to_string()).collect();
-        } else if arg.len() == 2 && arg.chars().all(|c| c.is_ascii_digit()) {
-            // County prefix: expand to all municipalities in that län
-            let matching: Vec<String> = MUNICIPALITIES.iter()
-                .filter(|(c, _)| c.starts_with(arg.as_str()))
-                .map(|(c, _)| c.to_string())
-                .collect();
-            if matching.is_empty() {
-                eprintln!("Warning: no municipalities found for county code {arg}");
-            } else {
-                eprintln!("Expanding county {arg} to {} municipalities", matching.len());
-                codes.extend(matching);
-            }
+    let lower = spec.to_lowercase();
+    if lower == "all" || lower == "00" {
+        eprintln!("Expanding 'all' to all {} municipalities", MUNICIPALITIES.len());
+        MUNICIPALITIES.iter().map(|(c, _)| c.to_string()).collect()
+    } else if spec.len() == 2 && spec.chars().all(|c| c.is_ascii_digit()) {
+        // County prefix: expand to all municipalities in that län
+        let matching: Vec<String> = MUNICIPALITIES.iter()
+            .filter(|(c, _)| c.starts_with(spec))
+            .map(|(c, _)| c.to_string())
+            .collect();
+        if matching.is_empty() {
+            eprintln!("Warning: no municipalities found for county code {spec}");
         } else {
-            codes.push(arg.clone());
+            eprintln!("Expanding county {spec} to {} municipalities", matching.len());
         }
+        matching
+    } else {
+        vec![spec.to_string()]
     }
-    codes
 }
 
 #[cfg(test)]
