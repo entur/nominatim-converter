@@ -77,6 +77,27 @@ pub fn convert_all(
     Ok(writer.count())
 }
 
+/// County (fylke) and locality fields derived from an address's kommunenummer:
+/// the GIDs plus the titleized fylke name. County fields are None when the
+/// kommune is missing from the mapping (e.g. no stedsnavn GML provided).
+struct KommuneFields {
+    county_gid: Option<String>,
+    locality_gid: Option<String>,
+    fylkesnavn: Option<String>,
+}
+
+fn kommune_fields(
+    kommunenummer: Option<&String>,
+    kommune_mapping: &HashMap<String, KommuneInfo>,
+) -> KommuneFields {
+    let info = kommunenummer.and_then(|k| kommune_mapping.get(k));
+    KommuneFields {
+        county_gid: info.map(|i| format!("KVE:TopographicPlace:{}", i.fylkesnummer)),
+        locality_gid: kommunenummer.map(|k| format!("KVE:TopographicPlace:{k}")),
+        fylkesnavn: info.map(|i| titleize(&i.fylkesnavn)),
+    }
+}
+
 fn convert_address(
     addr: &MatrikkelAdresse,
     matrikkel: &MatrikkelConfig,
@@ -85,9 +106,8 @@ fn convert_address(
 ) -> NominatimPlace {
     let coord = geo::convert_utm33_to_lat_lon(addr.ost, addr.nord);
     let country = geo::get_country(&coord).unwrap_or_else(Country::no);
-    let fylkesnummer = addr.kommunenummer.as_ref().and_then(|k| kommune_mapping.get(k).map(|i| i.fylkesnummer.clone()));
-    let county_gid = fylkesnummer.as_ref().map(|f| format!("KVE:TopographicPlace:{f}"));
-    let locality_gid = addr.kommunenummer.as_ref().map(|k| format!("KVE:TopographicPlace:{k}"));
+    let KommuneFields { county_gid, locality_gid, fylkesnavn } =
+        kommune_fields(addr.kommunenummer.as_ref(), kommune_mapping);
 
     let visible_cats = vec![
         LEGACY_SOURCE_OPENADDRESSES.to_string(),
@@ -111,9 +131,6 @@ fn convert_address(
         (Some(n), None) => Some(n.clone()),
         _ => None,
     };
-
-    let fylkesnavn = addr.kommunenummer.as_ref()
-        .and_then(|k| kommune_mapping.get(k).map(|i| titleize(&i.fylkesnavn)));
 
     let importance = RawNumber::from_f64_6dp(
         importance_calc.calculate_importance_for(&id, matrikkel.address_popularity)
@@ -182,9 +199,8 @@ fn convert_street(
     let street_name = addr.adressenavn.as_deref().unwrap_or("");
     let id = format!("KVE:TopographicPlace:{}-{street_name}", addr.kommunenummer.as_deref().unwrap_or(""));
 
-    let fylkesnummer = addr.kommunenummer.as_ref().and_then(|k| kommune_mapping.get(k).map(|i| i.fylkesnummer.clone()));
-    let county_gid = fylkesnummer.as_ref().map(|f| format!("KVE:TopographicPlace:{f}"));
-    let locality_gid = addr.kommunenummer.as_ref().map(|k| format!("KVE:TopographicPlace:{k}"));
+    let KommuneFields { county_gid, locality_gid, fylkesnavn } =
+        kommune_fields(addr.kommunenummer.as_ref(), kommune_mapping);
 
     let visible_cats = vec![
         LEGACY_SOURCE_WHOSONFIRST.to_string(),
@@ -198,9 +214,6 @@ fn convert_street(
     indexed_cats.push(as_category(&id));
     if let Some(gid) = &county_gid { indexed_cats.push(county_ids_category(gid)); }
     if let Some(gid) = &locality_gid { indexed_cats.push(locality_ids_category(gid)); }
-
-    let fylkesnavn = addr.kommunenummer.as_ref()
-        .and_then(|k| kommune_mapping.get(k).map(|i| titleize(&i.fylkesnavn)));
 
     let importance = RawNumber::from_f64_6dp(
         importance_calc.calculate_importance_for(&id, matrikkel.street_popularity)

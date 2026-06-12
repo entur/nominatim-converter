@@ -29,7 +29,7 @@ pub fn convert_all(
 
     // Pass 1: stream addresses to output
     let mut writer = JsonWriter::open(output, is_appending)?;
-    let mut street_groups: HashMap<String, StreetAgg> = HashMap::new();
+    let mut street_groups: HashMap<(String, String), StreetAgg> = HashMap::new();
 
     for addr in &all_addresses {
         let place = convert_address(addr, belagenhet, &importance_calc);
@@ -37,8 +37,7 @@ pub fn convert_all(
 
         // Build street aggregation for Pass 2, keyed by (street_name, kommunkod)
         if let Some(name) = addr.street_or_place_name() {
-            let kommun = addr.kommunkod.as_deref().unwrap_or("");
-            let key = format!("{name}|{kommun}");
+            let key = (name, addr.kommunkod.clone().unwrap_or_default());
             let agg = street_groups.entry(key).or_insert_with(|| StreetAgg {
                 representative: addr.clone(),
                 sum_east: 0.0,
@@ -52,16 +51,12 @@ pub fn convert_all(
     }
 
     // Pass 2: stream streets to output
-    let mut street_count = 0;
     for agg in street_groups.values() {
-        let avg_east = agg.sum_east / agg.count as f64;
-        let avg_north = agg.sum_north / agg.count as f64;
-        let place = convert_street(&agg.representative, avg_east, avg_north, belagenhet, &importance_calc);
+        let place = convert_street(agg, belagenhet, &importance_calc);
         writer.write_entry(&place)?;
-        street_count += 1;
     }
 
-    eprintln!("Converted {} addresses and {street_count} streets", all_addresses.len());
+    eprintln!("Converted {} addresses and {} streets", all_addresses.len(), street_groups.len());
     Ok(writer.count())
 }
 
@@ -127,11 +122,18 @@ fn convert_address(
             address: Address {
                 street: street_name,
                 city: Some(titleize(postort)),
-                county: addr.lanskod.as_deref().map(|_| {
-                    // Use kommunnamn as a locality stand-in; county (län) is not in the data
-                    // by name, but kommunnamn provides useful context
-                    addr.kommunnamn.as_deref().map(titleize).unwrap_or_default()
-                }).filter(|s| !s.is_empty()),
+                // Use kommunnamn as a county stand-in; the county (län) name is
+                // not in the data, only its lanskod, but kommunnamn provides
+                // useful context. Gated on lanskod so the stand-in is only
+                // emitted when the address actually has a county affiliation;
+                // convert_street fills county ungated -- that asymmetry dates
+                // to the original belagenhet importer (commit b594638) and is
+                // kept as-is to preserve bit-identical output.
+                county: if addr.lanskod.is_some() {
+                    addr.kommunnamn.as_deref().map(titleize).filter(|s| !s.is_empty())
+                } else {
+                    None
+                },
             },
             postcode: addr.postnummer.clone(),
             country_code: Some(country.alpha2.clone()),
@@ -155,13 +157,12 @@ fn convert_address(
 }
 
 fn convert_street(
-    addr: &BelagenhetAdress,
-    avg_east: f64,
-    avg_north: f64,
+    agg: &StreetAgg,
     belagenhet: &BelagenhetConfig,
     importance_calc: &ImportanceCalculator,
 ) -> NominatimPlace {
-    let coord = geo::convert_sweref99tm_to_lat_lon(avg_east, avg_north);
+    let addr = &agg.representative;
+    let coord = geo::convert_sweref99tm_to_lat_lon(agg.sum_east / agg.count as f64, agg.sum_north / agg.count as f64);
     let country = geo::get_country(&coord).unwrap_or_else(Country::se);
     let street_name = addr.street_or_place_name().unwrap_or_default();
     let kommun = addr.kommunkod.as_deref().unwrap_or("");

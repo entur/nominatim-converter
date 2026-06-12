@@ -47,6 +47,9 @@ impl BelagenhetAdress {
     }
 
     /// Whether this address type uses addr:street (vs addr:place).
+    /// Unused in production: kept (test-only) to document the
+    /// Gatuadressplats/Metertalsadressplats distinction for future
+    /// addr:street vs addr:place handling.
     #[cfg(test)]
     pub fn is_street_address(&self) -> bool {
         matches!(self.adressplatstyp.as_str(), "Gatuadressplats" | "Metertalsadressplats")
@@ -250,15 +253,12 @@ fn parse_gpkg_point_geometry(blob: &[u8]) -> Result<(f64, f64), Box<dyn std::err
         return Err(format!("Expected WKB Point (type 1), got type {geom_type}").into());
     }
 
-    let (x, y) = if wkb_byte_order == 1 {
-        let x = f64::from_le_bytes(wkb[5..13].try_into()?);
-        let y = f64::from_le_bytes(wkb[13..21].try_into()?);
-        (x, y)
-    } else {
-        let x = f64::from_be_bytes(wkb[5..13].try_into()?);
-        let y = f64::from_be_bytes(wkb[13..21].try_into()?);
-        (x, y)
+    let read_f64 = |range: std::ops::Range<usize>| -> Result<f64, Box<dyn std::error::Error>> {
+        let bytes: [u8; 8] = wkb[range].try_into()?;
+        Ok(if wkb_byte_order == 1 { f64::from_le_bytes(bytes) } else { f64::from_be_bytes(bytes) })
     };
+    let x = read_f64(5..13)?;
+    let y = read_f64(13..21)?;
 
     Ok((x, y))
 }

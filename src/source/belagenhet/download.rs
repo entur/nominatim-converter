@@ -84,6 +84,8 @@ fn load_credentials() -> Result<(String, String), Box<dyn std::error::Error>> {
     Ok((user, pass))
 }
 
+/// Hand-rolled base64 (RFC 4648, no line wrapping) to avoid pulling in a
+/// direct dependency for a single Basic-auth header.
 fn base64_encode(input: &[u8]) -> String {
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut result = String::new();

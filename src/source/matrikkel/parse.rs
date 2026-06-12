@@ -50,6 +50,11 @@ pub(crate) fn parse_csv(input: &Path) -> Result<Vec<MatrikkelAdresse>, Box<dyn s
         let tokens: Vec<&str> = line.split(';').collect();
         // Kartverket CSV has 46+ columns; column 3 is address type ("vegadresse" = street address).
         // Other types (e.g. "matrikkeladresse") are farm-based and excluded.
+        // Columns used (0-based, per the Kartverket header):
+        //   0=lokalid  1=kommunenummer  2=kommunenavn  3=adressetype
+        //   4=adressetilleggsnavn  7=adressenavn  8=nummer  9=bokstav
+        //   17=Nord  18=Øst  19=postnummer  20=poststed
+        //   21=grunnkretsnummer  22=grunnkretsnavn
         if tokens.len() < 46 || tokens[3] != "vegadresse" { continue; }
 
         let nord: f64 = tokens[17].parse().unwrap_or(0.0);
@@ -77,6 +82,15 @@ fn non_empty(s: &str) -> Option<String> {
     if s.is_empty() { None } else { Some(s.to_string()) }
 }
 
+/// Strip any namespace prefix from a qualified XML tag name
+/// (e.g. "app:kommunenummer" -> "kommunenummer").
+fn local_name(name: &str) -> &str {
+    match name.rfind(':') {
+        Some(i) => &name[i + 1..],
+        None => name,
+    }
+}
+
 pub(crate) fn build_kommune_mapping(gml_path: &Path) -> Result<HashMap<String, KommuneInfo>, Box<dyn std::error::Error>> {
     eprintln!("Building kommune-fylke mapping from {}...", gml_path.display());
     let file = std::fs::File::open(gml_path)?;
@@ -98,23 +112,22 @@ pub(crate) fn build_kommune_mapping(gml_path: &Path) -> Result<HashMap<String, K
             Ok(Event::Start(ref e)) => {
                 let qname = e.name();
                 let name = std::str::from_utf8(qname.as_ref()).unwrap_or("");
-                match name {
-                    "featureMember" | "gml:featureMember" => {
+                match local_name(name) {
+                    "featureMember" => {
                         in_feature = true;
                         kommunenummer = None;
                         fylkesnummer = None;
                         fylkesnavn = None;
                     }
-                    n if in_feature && (n == "kommunenummer" || n == "app:kommunenummer") => {
-                        current_field = Some("kommunenummer");
-                        text_buf.clear();
-                    }
-                    n if in_feature && (n == "fylkesnummer" || n == "app:fylkesnummer") => {
-                        current_field = Some("fylkesnummer");
-                        text_buf.clear();
-                    }
-                    n if in_feature && (n == "fylkesnavn" || n == "app:fylkesnavn") => {
-                        current_field = Some("fylkesnavn");
+                    f @ ("kommunenummer" | "fylkesnummer" | "fylkesnavn") if in_feature => {
+                        // `f` borrows from the per-event buffer (cleared each
+                        // iteration), so re-anchor it to the matching 'static
+                        // literal before storing it in current_field.
+                        current_field = Some(match f {
+                            "kommunenummer" => "kommunenummer",
+                            "fylkesnummer" => "fylkesnummer",
+                            _ => "fylkesnavn",
+                        });
                         text_buf.clear();
                     }
                     _ => {}
@@ -125,6 +138,10 @@ pub(crate) fn build_kommune_mapping(gml_path: &Path) -> Result<HashMap<String, K
                     text_buf.extend_from_slice(e.as_ref());
                 }
             Ok(Event::End(ref e)) => {
+                // This commits text_buf on ANY closing tag, not just the one
+                // that opened current_field. That is correct only because the
+                // three tracked fields are leaf elements: the first End event
+                // after their Start is always their own closing tag.
                 if let Some(field) = current_field {
                     let text = String::from_utf8_lossy(&text_buf).trim().to_string();
                     match field {
@@ -140,7 +157,7 @@ pub(crate) fn build_kommune_mapping(gml_path: &Path) -> Result<HashMap<String, K
 
                 let qname = e.name();
                 let name = std::str::from_utf8(qname.as_ref()).unwrap_or("");
-                if name == "featureMember" || name == "gml:featureMember" {
+                if local_name(name) == "featureMember" {
                     in_feature = false;
                     if let (Some(kn), Some(fn_), Some(fnavn)) = (&kommunenummer, &fylkesnummer, &fylkesnavn) {
                         mapping.entry(kn.clone()).or_insert_with(|| KommuneInfo {
