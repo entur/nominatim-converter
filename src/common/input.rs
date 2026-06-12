@@ -1,3 +1,4 @@
+use crate::common::util::fnv1a_64;
 use std::fs::File;
 use std::io::{self, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -360,20 +361,6 @@ fn parse_url(url: &str) -> ParsedUrl {
 fn cache_path_in(dir: &Path, normalized_url: &str, basename: &str) -> PathBuf {
     let hash = fnv1a_64(normalized_url.as_bytes());
     dir.join(format!("{hash:016x}-{basename}"))
-}
-
-/// FNV-1a 64-bit hash. Implemented inline (13 lines) rather than pulled from a
-/// crate so the algorithm and constants are frozen next to the test vectors
-/// that pin them.
-const fn fnv1a_64(bytes: &[u8]) -> u64 {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    let mut i = 0;
-    while i < bytes.len() {
-        hash ^= bytes[i] as u64;
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-        i += 1;
-    }
-    hash
 }
 
 /// Append an extra suffix to a path, preserving the original (e.g. `.zip`).
@@ -963,13 +950,4 @@ mod tests {
         assert!(!path.exists(), "partial download must not be left behind");
     }
 
-    #[test]
-    fn test_fnv1a_64_known_vectors() {
-        // Standard FNV-1a test vectors (see http://isthe.com/chongo/tech/comp/fnv/).
-        // Pinning these ensures cache filenames stay stable across versions
-        // of this tool and any future edits to the hash implementation.
-        assert_eq!(fnv1a_64(b""), 0xcbf2_9ce4_8422_2325);
-        assert_eq!(fnv1a_64(b"a"), 0xaf63_dc4c_8601_ec8c);
-        assert_eq!(fnv1a_64(b"foobar"), 0x8594_4171_f739_67e8);
-    }
 }

@@ -91,11 +91,19 @@ fn transliterations() -> &'static std::collections::HashMap<char, String> {
 /// from its copy of the same table when querying - the two must produce
 /// byte-identical output.
 pub fn as_category(s: &str) -> String {
+    sanitize_with_transliteration(s, '.')
+}
+
+/// Shared char mapping for Photon-safe strings: `[a-zA-Z0-9_-]` passes
+/// through, `:` becomes `colon_replacement` (`.` for categories, `-` for
+/// place_ids), table characters are transliterated (å -> aa, ø -> oe, ...),
+/// and anything else becomes `_`.
+pub(crate) fn sanitize_with_transliteration(s: &str, colon_replacement: char) -> String {
     let map = transliterations();
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
-            ':' => out.push('.'),
+            ':' => out.push(colon_replacement),
             'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-' => out.push(c),
             _ => match map.get(&c) {
                 Some(replacement) => out.push_str(replacement),
