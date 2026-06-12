@@ -136,7 +136,9 @@ pub fn resolve_input(
 /// Download a URL (or load from cache), extracting ZIPs if needed.
 /// `fetch` is only invoked on cache miss (or when `cache.refresh` is set);
 /// this is the seam callers use to customize the request -- e.g., to add
-/// `Authorization` headers for Lantmäteriet.
+/// `Authorization` headers for Lantmäteriet. Transient failures are retried
+/// (see `is_retryable`), so `fetch` may be called up to `DOWNLOAD_ATTEMPTS`
+/// times.
 ///
 /// **Crate-internal extension point.** Public because `source::belagenhet`
 /// lives in a sibling module and needs custom-auth downloads. Not a stable
@@ -148,7 +150,7 @@ pub fn fetch_and_resolve<F>(
     fetch: F,
 ) -> Result<ResolvedInput, Box<dyn std::error::Error>>
 where
-    F: FnOnce(&str) -> Result<DownloadStream, Box<dyn std::error::Error>>,
+    F: Fn(&str) -> Result<DownloadStream, Box<dyn std::error::Error>>,
 {
     let parsed = parse_url(url);
     let raw_cache = cache.dir().map(|d| cache_path_in(d, &parsed.normalized, &parsed.basename));
@@ -186,9 +188,6 @@ where
     {
         eprintln!("Refreshing cached: {} (--refresh-cache)", p.display());
     }
-    eprintln!("Downloading {url}...");
-    let stream = fetch(url)?;
-
     let (raw_path, raw_is_temp) = match raw_cache.as_ref() {
         Some(p) => {
             if let Some(parent) = p.parent() {
@@ -202,7 +201,7 @@ where
         }
     };
 
-    download_to_file(stream.reader, &raw_path, stream.content_length)?;
+    download_with_retry(url, &raw_path, fetch)?;
 
     if !parsed.is_zip {
         return Ok(if raw_is_temp {
@@ -224,6 +223,69 @@ where
         std::fs::remove_file(&raw_path).ok();
     }
     Ok(extracted)
+}
+
+/// Total attempts per download (initial try plus retries).
+const DOWNLOAD_ATTEMPTS: u32 = 3;
+
+/// Delay before the first retry; doubles after each subsequent failure.
+/// Zero under `cfg(test)` so the retry unit tests don't sleep for real.
+#[cfg(not(test))]
+const RETRY_BASE_DELAY_SECS: u64 = 2;
+#[cfg(test)]
+const RETRY_BASE_DELAY_SECS: u64 = 0;
+
+/// Fetch `url` and stream it to `path`, retrying transient failures.
+/// A failure anywhere -- the request itself or mid-stream while writing --
+/// restarts the whole download. The partial file is removed before each retry
+/// (and on final failure) so a truncated download is never mistaken for a
+/// complete cache entry on the next run.
+fn download_with_retry(
+    url: &str,
+    path: &Path,
+    fetch: impl Fn(&str) -> Result<DownloadStream, Box<dyn std::error::Error>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut attempt = 1;
+    loop {
+        eprintln!("Downloading {url}...");
+        let result = fetch(url)
+            .and_then(|stream| download_to_file(stream.reader, path, stream.content_length));
+        let Err(err) = result else { return Ok(()) };
+        std::fs::remove_file(path).ok();
+        if attempt >= DOWNLOAD_ATTEMPTS || !is_retryable(err.as_ref()) {
+            eprintln!("Download failed (attempt {attempt}/{DOWNLOAD_ATTEMPTS}), giving up: {err}");
+            return Err(err);
+        }
+        let delay = RETRY_BASE_DELAY_SECS * 2u64.pow(attempt - 1);
+        eprintln!("Download failed (attempt {attempt}/{DOWNLOAD_ATTEMPTS}): {err}");
+        eprintln!("Retrying in {delay}s...");
+        std::thread::sleep(std::time::Duration::from_secs(delay));
+        attempt += 1;
+    }
+}
+
+/// Whether a failed download is worth retrying. HTTP 4xx (except 408/429)
+/// means the request itself is wrong -- bad URL, bad credentials -- and will
+/// fail identically on retry. Everything else (connection failures, timeouts,
+/// 5xx, mid-stream I/O errors) is treated as transient.
+fn is_retryable(err: &(dyn std::error::Error + 'static)) -> bool {
+    let mut current = Some(err);
+    while let Some(e) = current {
+        if let Some(ureq_err) = e.downcast_ref::<ureq::Error>() {
+            return match ureq_err {
+                ureq::Error::StatusCode(code) => *code >= 500 || *code == 408 || *code == 429,
+                _ => true,
+            };
+        }
+        // io::Error::source() skips the error it wraps (it returns the inner
+        // error's own source), so step into the wrapped error explicitly.
+        current = if let Some(io_err) = e.downcast_ref::<io::Error>() {
+            io_err.get_ref().map(|inner| inner as &(dyn std::error::Error + 'static))
+        } else {
+            e.source()
+        };
+    }
+    true
 }
 
 fn default_fetch(url: &str) -> Result<DownloadStream, Box<dyn std::error::Error>> {
@@ -346,10 +408,15 @@ pub(crate) fn download_to_file(
     let mut last_report: u64 = 0;
     let mut buf = vec![0u8; 256 * 1024];
 
-    loop {
-        let n = reader.read(&mut buf)?;
-        if n == 0 { break; }
-        file.write_all(&buf[..n])?;
+    let result = loop {
+        let n = match reader.read(&mut buf) {
+            Ok(0) => break Ok(()),
+            Ok(n) => n,
+            Err(e) => break Err(e),
+        };
+        if let Err(e) = file.write_all(&buf[..n]) {
+            break Err(e);
+        }
         downloaded += n as u64;
 
         if downloaded - last_report >= 50_000_000 {
@@ -361,11 +428,15 @@ pub(crate) fn download_to_file(
             }
             last_report = downloaded;
         }
-    }
+    };
 
+    // Terminate the `\r` progress line even when the copy failed mid-stream,
+    // so the error/retry message that follows starts on its own line.
     if last_report > 0 {
         eprintln!();
     }
+    result?;
+
     let size_mb = downloaded as f64 / (1024.0 * 1024.0);
     eprintln!("Downloaded {size_mb:.1} MB to {}", path.display());
     Ok(())
@@ -462,6 +533,7 @@ fn glob_match(pattern: &str, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
 
     #[test]
     fn test_glob_match_wildcard_all() {
@@ -796,6 +868,97 @@ mod tests {
             append_suffix(Path::new("/tmp/foo.zip"), ".extracted"),
             PathBuf::from("/tmp/foo.zip.extracted")
         );
+    }
+
+    #[test]
+    fn test_is_retryable_http_status_codes() {
+        let retryable = [500u16, 502, 503, 408, 429];
+        for code in retryable {
+            let err: Box<dyn std::error::Error> = Box::new(ureq::Error::StatusCode(code));
+            assert!(is_retryable(err.as_ref()), "HTTP {code} should be retryable");
+        }
+        let permanent = [400u16, 401, 403, 404];
+        for code in permanent {
+            let err: Box<dyn std::error::Error> = Box::new(ureq::Error::StatusCode(code));
+            assert!(!is_retryable(err.as_ref()), "HTTP {code} should not be retryable");
+        }
+    }
+
+    #[test]
+    fn test_is_retryable_io_and_string_errors() {
+        let io_err: Box<dyn std::error::Error> =
+            Box::new(io::Error::new(io::ErrorKind::ConnectionReset, "reset"));
+        assert!(is_retryable(io_err.as_ref()));
+
+        let string_err: Box<dyn std::error::Error> = "something else".into();
+        assert!(is_retryable(string_err.as_ref()));
+    }
+
+    #[test]
+    fn test_is_retryable_walks_source_chain() {
+        // A ureq status error wrapped in an io::Error should still be
+        // classified by the inner status code.
+        let inner = ureq::Error::StatusCode(404);
+        let wrapped: Box<dyn std::error::Error> =
+            Box::new(io::Error::new(io::ErrorKind::Other, inner));
+        assert!(!is_retryable(wrapped.as_ref()));
+    }
+
+    #[test]
+    fn test_download_with_retry_gives_up_on_permanent_error() {
+        let calls = Cell::new(0u32);
+        let path = make_temp_path("txt");
+        let result = download_with_retry("https://example.com/x", &path, |_url| {
+            calls.set(calls.get() + 1);
+            Err(Box::new(ureq::Error::StatusCode(404)) as Box<dyn std::error::Error>)
+        });
+        assert!(result.is_err());
+        assert_eq!(calls.get(), 1, "permanent errors must not be retried");
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn test_download_with_retry_recovers_from_transient_error() {
+        let calls = Cell::new(0u32);
+        let path = make_temp_path("txt");
+        let result = download_with_retry("https://example.com/x", &path, |_url| {
+            calls.set(calls.get() + 1);
+            if calls.get() == 1 {
+                Err(Box::new(io::Error::new(io::ErrorKind::ConnectionReset, "reset"))
+                    as Box<dyn std::error::Error>)
+            } else {
+                let data = b"payload".to_vec();
+                Ok(DownloadStream::new(Box::new(io::Cursor::new(data)), Some(7)))
+            }
+        });
+        assert!(result.is_ok());
+        assert_eq!(calls.get(), 2);
+        assert_eq!(std::fs::read(&path).unwrap(), b"payload");
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    struct FailingReader;
+
+    impl Read for FailingReader {
+        fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+            Err(io::Error::new(io::ErrorKind::ConnectionReset, "mid-stream failure"))
+        }
+    }
+
+    #[test]
+    fn test_download_with_retry_removes_partial_file_after_final_failure() {
+        let calls = Cell::new(0u32);
+        let path = make_temp_path("txt");
+        let result = download_with_retry("https://example.com/x", &path, |_url| {
+            calls.set(calls.get() + 1);
+            // Stream that yields some bytes, then fails mid-download.
+            let good: Box<dyn Read> = Box::new(io::Cursor::new(b"partial".to_vec()));
+            let bad: Box<dyn Read> = Box::new(FailingReader);
+            Ok(DownloadStream::new(Box::new(good.chain(bad)), None))
+        });
+        assert!(result.is_err());
+        assert_eq!(calls.get(), DOWNLOAD_ATTEMPTS, "mid-stream failures should be retried");
+        assert!(!path.exists(), "partial download must not be left behind");
     }
 
     #[test]

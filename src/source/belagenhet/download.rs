@@ -1,4 +1,6 @@
-use crate::common::input::{CacheOptions, DownloadStream, ResolvedInput, USER_AGENT, fetch_and_resolve};
+use crate::common::input::{
+    CacheOptions, DownloadStream, ResolvedInput, USER_AGENT, fetch_and_resolve, is_cached,
+};
 
 const BASE_URL: &str = "https://dl1.lantmateriet.se/adress/belagenhetsadresser";
 
@@ -16,7 +18,33 @@ pub fn download_municipality(
     cache: &CacheOptions,
 ) -> Result<ResolvedInput, Box<dyn std::error::Error>> {
     let url = municipality_url(kommun_id);
+    // Fail fast on missing credentials, but only when the download will
+    // actually hit the network -- a warm cache run needs no auth, and a
+    // missing env var would otherwise be retried as if it were transient.
+    if cache.is_refresh() || !is_cached(&url, cache) {
+        load_credentials()?;
+    }
     fetch_and_resolve(&url, Some("*.gpkg"), cache, fetch_with_basic_auth)
+        .map_err(describe_download_error)
+}
+
+/// Turn raw HTTP errors into operator-friendly messages: 401/403 get a
+/// credentials hint, other HTTP errors get Lantmäteriet attribution, and
+/// non-HTTP errors (extraction, disk) pass through unchanged.
+///
+/// This runs *after* the retry layer in `fetch_and_resolve`, which needs the
+/// raw `ureq::Error` to tell transient failures from permanent ones -- so the
+/// error must stay unwrapped until this point.
+fn describe_download_error(e: Box<dyn std::error::Error>) -> Box<dyn std::error::Error> {
+    match e.downcast_ref::<ureq::Error>() {
+        // ureq 3.x returns Err for 4xx/5xx, so auth failures arrive here.
+        Some(ureq::Error::StatusCode(401 | 403)) => {
+            format!("Authentication failed. Check LANTMATERIET_USER and LANTMATERIET_PASS. ({e})")
+                .into()
+        }
+        Some(_) => format!("Failed to download from Lantmäteriet: {e}").into(),
+        None => e,
+    }
 }
 
 /// URL for a single municipality's belägenhetsadresser archive.
@@ -28,19 +56,12 @@ fn fetch_with_basic_auth(url: &str) -> Result<DownloadStream, Box<dyn std::error
     let (user, pass) = load_credentials()?;
     let encoded = base64_encode(format!("{user}:{pass}").as_bytes());
 
+    // Errors are returned raw (not stringified) so the retry layer in
+    // `fetch_and_resolve` can tell transient failures from permanent ones.
     let response = ureq::get(url)
         .header("User-Agent", USER_AGENT)
         .header("Authorization", &format!("Basic {encoded}"))
-        .call()
-        .map_err(|e| {
-            // ureq 3.x returns Err for 4xx/5xx, so auth failures arrive here
-            let msg = e.to_string();
-            if msg.contains("401") || msg.contains("403") {
-                format!("Authentication failed. Check LANTMATERIET_USER and LANTMATERIET_PASS. ({msg})")
-            } else {
-                format!("Failed to download from Lantmäteriet: {msg}")
-            }
-        })?;
+        .call()?;
 
     let content_length = response
         .headers()
@@ -90,6 +111,29 @@ fn base64_encode(input: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_describe_download_error_adds_credentials_hint_for_auth_failures() {
+        for code in [401u16, 403] {
+            let err: Box<dyn std::error::Error> = Box::new(ureq::Error::StatusCode(code));
+            let msg = describe_download_error(err).to_string();
+            assert!(msg.contains("LANTMATERIET_USER"), "HTTP {code}: got '{msg}'");
+        }
+    }
+
+    #[test]
+    fn test_describe_download_error_attributes_other_http_errors() {
+        let err: Box<dyn std::error::Error> = Box::new(ureq::Error::StatusCode(500));
+        let msg = describe_download_error(err).to_string();
+        assert!(msg.contains("Lantmäteriet"), "got '{msg}'");
+        assert!(!msg.contains("LANTMATERIET_USER"));
+    }
+
+    #[test]
+    fn test_describe_download_error_passes_non_http_errors_through() {
+        let err: Box<dyn std::error::Error> = "disk full".into();
+        assert_eq!(describe_download_error(err).to_string(), "disk full");
+    }
 
     #[test]
     fn test_base64_encode() {
