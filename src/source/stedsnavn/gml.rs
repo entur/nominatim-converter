@@ -50,6 +50,8 @@ pub(crate) fn parse_gml(xml: &str) -> Result<Vec<StedsnavnEntry>, Box<dyn std::e
 
 pub(crate) fn parse_feature_member<R: std::io::BufRead>(reader: &mut Reader<R>) -> Result<Option<StedsnavnEntry>, Box<dyn std::error::Error>> {
     let mut lokal_id: Option<String> = None;
+    // `navnerom` must be present for the entry to be kept (matching the original
+    // converter's filter), but it is deliberately not emitted in the output.
     let mut navnerom: Option<String> = None;
     let mut stedsnavn: Option<String> = None;
     let mut navneobjekttype: Option<String> = None;
@@ -134,22 +136,30 @@ pub(crate) fn parse_feature_member<R: std::io::BufRead>(reader: &mut Reader<R>) 
         buf.clear();
     }
 
-    // Filter
+    // Filter: target type, accepted spelling status, and all required fields present.
+    // `navnerom` is required-present (the original converter filtered on it) but is
+    // deliberately not emitted, so it is matched here without being bound.
     let is_target = navneobjekttype.as_deref().is_some_and(|t| TARGET_TYPES.contains(&t));
     let has_status = skrivemaatestatus.as_deref().is_some_and(|s| ACCEPTED_STATUS.contains(&s));
-    let has_fields = lokal_id.is_some() && navnerom.is_some() && stedsnavn.is_some()
-        && kommunenummer.is_some() && kommunenavn.is_some()
-        && fylkesnummer.is_some() && fylkesnavn.is_some();
 
-    if is_target && has_status && has_fields {
+    if is_target
+        && has_status
+        && let (
+            Some(lokal_id), Some(_), Some(stedsnavn), Some(navneobjekttype),
+            Some(kommunenummer), Some(kommunenavn), Some(fylkesnummer), Some(fylkesnavn),
+        ) = (
+            lokal_id, navnerom, stedsnavn, navneobjekttype,
+            kommunenummer, kommunenavn, fylkesnummer, fylkesnavn,
+        )
+    {
         Ok(Some(StedsnavnEntry {
-            lokal_id: lokal_id.unwrap(),
-            stedsnavn: stedsnavn.unwrap(),
-            navneobjekttype: navneobjekttype.unwrap(),
-            kommunenummer: kommunenummer.unwrap(),
-            kommunenavn: kommunenavn.unwrap(),
-            fylkesnummer: fylkesnummer.unwrap(),
-            fylkesnavn: fylkesnavn.unwrap(),
+            lokal_id,
+            stedsnavn,
+            navneobjekttype,
+            kommunenummer,
+            kommunenavn,
+            fylkesnummer,
+            fylkesnavn,
             coordinates,
             annen_skrivemaate,
         }))

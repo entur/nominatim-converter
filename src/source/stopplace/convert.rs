@@ -7,7 +7,7 @@ use crate::common::importance::{ImportanceCalculator, IMPORTANCE_FLOOR};
 use crate::common::text::{join_osm_values, OSM_TAG_SEPARATOR};
 use crate::common::translator;
 use crate::common::usage::UsageBoost;
-use crate::config::Config;
+use crate::config::{Config, StopPlaceConfig};
 use crate::target::json_writer::JsonWriter;
 use crate::target::nominatim_id::as_place_id;
 use crate::target::nominatim_place::*;
@@ -57,14 +57,11 @@ pub fn convert_all(
         (sp.id.clone(), pop)
     }).collect();
 
-    // Build child stop names and child stops maps
-    let mut child_names: HashMap<String, Vec<String>> = HashMap::new();
+    // Build child stops map (parentRef -> child stop places, in document order).
+    // Child names are derived from this map where needed.
     let mut child_stops: HashMap<String, Vec<&StopPlaceXml>> = HashMap::new();
     for sp in &result.stop_places {
         if let Some(parent_ref) = &sp.parent_site_ref {
-            if let Some(name) = &sp.name {
-                child_names.entry(parent_ref.ref_.clone()).or_default().push(name.clone());
-            }
             child_stops.entry(parent_ref.ref_.clone()).or_default().push(sp);
         }
     }
@@ -74,13 +71,11 @@ pub fn convert_all(
     // Convert stop places
     for sp in &result.stop_places {
         let pop = stop_popularities.get(&sp.id).copied().unwrap_or(0);
-        let child_stop_names = child_names.get(&sp.id).cloned().unwrap_or_default();
         let my_child_stops = child_stops.get(&sp.id).cloned().unwrap_or_default();
 
         if let Some(entry) = convert_stop_place(
-            config, &importance_calc, sp, &result.topo_places,
-            &stop_place_types, &result.fare_zones, pop,
-            &child_stop_names, &my_child_stops,
+            stop_place, &importance_calc, sp, &result.topo_places,
+            &stop_place_types, &result.fare_zones, pop, &my_child_stops,
         ) {
             entries.push(entry);
         }
@@ -91,27 +86,13 @@ pub fn convert_all(
 
     let secondary_gosps: HashSet<&str> = stop_place.group_of_stop_places.secondary_gosps
         .iter().map(String::as_str).collect();
-    if !secondary_gosps.is_empty() {
-        let gosp_ids: HashSet<&str> = result.groups.iter().map(|g| g.id.as_str()).collect();
-        let n = secondary_gosps.len();
-        eprintln!("Demoting {n} configured secondary GoSP{}:", if n == 1 { "" } else { "s" });
-        for gosp in &result.groups {
-            if secondary_gosps.contains(gosp.id.as_str()) {
-                eprintln!("  {} \"{}\"", gosp.id, gosp.name.as_deref().unwrap_or(""));
-            }
-        }
-        for id in &secondary_gosps {
-            if !gosp_ids.contains(id) {
-                eprintln!("  warning: configured secondary GoSP {id} not found in input - typo?");
-            }
-        }
-    }
+    log_secondary_gosps(&secondary_gosps, &result.groups);
 
     // Convert groups of stop places
     for gosp in &result.groups {
         let is_secondary = secondary_gosps.contains(gosp.id.as_str());
         if let Some(entry) = convert_gosp(
-            config, &importance_calc, gosp, &result.topo_places,
+            stop_place, &importance_calc, gosp, &result.topo_places,
             &stop_popularities, &stop_by_id, is_secondary,
         ) {
             entries.push(entry);
@@ -120,6 +101,27 @@ pub fn convert_all(
 
     let count = JsonWriter::export(&entries, output, is_appending)?;
     Ok(count)
+}
+
+/// Log the configured secondary-GoSP demotions (and warn about configured IDs that
+/// don't exist in the input) to stderr. No effect on the NDJSON output.
+fn log_secondary_gosps(secondary_gosps: &HashSet<&str>, groups: &[GroupOfStopPlacesXml]) {
+    if secondary_gosps.is_empty() {
+        return;
+    }
+    let gosp_ids: HashSet<&str> = groups.iter().map(|g| g.id.as_str()).collect();
+    let n = secondary_gosps.len();
+    eprintln!("Demoting {n} configured secondary GoSP{}:", if n == 1 { "" } else { "s" });
+    for gosp in groups {
+        if secondary_gosps.contains(gosp.id.as_str()) {
+            eprintln!("  {} \"{}\"", gosp.id, gosp.name.as_deref().unwrap_or(""));
+        }
+    }
+    for id in secondary_gosps {
+        if !gosp_ids.contains(id) {
+            eprintln!("  warning: configured secondary GoSP {id} not found in input - typo?");
+        }
+    }
 }
 
 /// A stop place's role in the parent-child hierarchy. Affects which source category
@@ -133,31 +135,20 @@ enum StopPlaceRole {
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn convert_stop_place(
-    config: &Config,
+    stop_place: &StopPlaceConfig,
     importance_calc: &ImportanceCalculator,
     sp: &StopPlaceXml,
     topo_places: &HashMap<String, TopographicPlaceXml>,
     stop_place_types: &HashMap<String, Vec<String>>,
     fare_zones: &HashMap<String, FareZoneXml>,
     popularity: i64,
-    child_stop_names: &[String],
     child_stops: &[&StopPlaceXml],
 ) -> Option<NominatimPlace> {
-    let stop_place = config.stop_place.as_ref().expect("stopplace config present when converting stopplace");
     let centroid_xml = sp.centroid.as_ref()?;
     let coord = Coordinate::new(centroid_xml.location.latitude, centroid_xml.location.longitude);
     let sp_name = sp.name.as_deref()?;
 
-    let locality_gid = sp.topographic_place_ref.as_ref().map(|r| r.ref_.clone());
-    let locality = locality_gid.as_ref().and_then(|gid| {
-        topo_places.get(gid).and_then(|tp| tp.descriptor.as_ref()?.name.clone())
-    });
-    let county_gid = locality_gid.as_ref().and_then(|gid| {
-        topo_places.get(gid).and_then(|tp| tp.parent_ref.as_ref().map(|r| r.ref_.clone()))
-    });
-    let county = county_gid.as_ref().and_then(|gid| {
-        topo_places.get(gid).and_then(|tp| tp.descriptor.as_ref()?.name.clone())
-    });
+    let geography = resolve_stop_geography(sp, topo_places);
     let country = determine_country(topo_places, sp, &coord);
     let child_types = stop_place_types.get(&sp.id).cloned().unwrap_or_default();
     let importance = RawNumber::from_f64_6dp(importance_calc.calculate_importance(popularity as f64));
@@ -169,11 +160,12 @@ pub(crate) fn convert_stop_place(
         .chain(sp.stop_place_type.iter().cloned())
         .collect();
 
-    let (visible_cats, indexed_cats) = build_stop_categories(
-        sp, &role, &inferred_types, &country, &county_gid, &locality_gid, fare_zones,
+    let StopCategories { visible: visible_cats, indexed: indexed_cats } = build_stop_categories(
+        sp, &role, &inferred_types, &country, &geography, fare_zones,
     );
 
-    let alt_names = build_stop_alt_names(sp, sp_name, child_stop_names);
+    let child_stop_names: Vec<String> = child_stops.iter().filter_map(|cs| cs.name.clone()).collect();
+    let alt_names = build_stop_alt_names(sp, sp_name, &child_stop_names);
     let visible_alt: Vec<String> = alt_stop_names(sp, sp_name, Some("label"));
 
     let entry = NominatimPlace {
@@ -191,15 +183,18 @@ pub(crate) fn convert_stop_place(
                 name_en: None,
                 alt_name: join_osm_values(&alt_names),
             }),
-            address: Address { city: locality.clone(), county: county.clone(), ..Default::default() },
+            address: Address {
+                city: geography.locality.clone(),
+                county: geography.county.clone(),
+                ..Default::default()
+            },
             housenumber: None,
             postcode: None,
             country_code: Some(country.alpha2.clone()),
             centroid: coord.centroid(),
             bbox: coord.bbox(),
             extra: build_stop_extra(
-                sp, &country, &county_gid, &locality, &locality_gid,
-                &visible_alt, &visible_cats, &inferred_types, child_stops,
+                sp, &country, &geography, &visible_alt, &visible_cats, &inferred_types, child_stops,
             ),
         }],
     };
@@ -218,15 +213,47 @@ fn classify_role(child_types: &[String], has_parent: bool) -> StopPlaceRole {
     }
 }
 
+/// Locality/county names and GIDs resolved from a stop place's TopographicPlaceRef,
+/// mirroring `GospGeography` for groups of stop places.
+struct StopGeography {
+    locality: Option<String>,
+    locality_gid: Option<String>,
+    county: Option<String>,
+    county_gid: Option<String>,
+}
+
+fn resolve_stop_geography(
+    sp: &StopPlaceXml,
+    topo_places: &HashMap<String, TopographicPlaceXml>,
+) -> StopGeography {
+    let locality_gid = sp.topographic_place_ref.as_ref().map(|r| r.ref_.clone());
+    let locality = locality_gid.as_ref().and_then(|gid| {
+        topo_places.get(gid).and_then(|tp| tp.descriptor.as_ref()?.name.clone())
+    });
+    let county_gid = locality_gid.as_ref().and_then(|gid| {
+        topo_places.get(gid).and_then(|tp| tp.parent_ref.as_ref().map(|r| r.ref_.clone()))
+    });
+    let county = county_gid.as_ref().and_then(|gid| {
+        topo_places.get(gid).and_then(|tp| tp.descriptor.as_ref()?.name.clone())
+    });
+    StopGeography { locality, locality_gid, county, county_gid }
+}
+
+/// Categories for a stop place: `visible` feeds the human-facing `tags` extra field;
+/// `indexed` (a superset of `visible`) feeds Photon's category filters.
+struct StopCategories {
+    visible: Vec<String>,
+    indexed: Vec<String>,
+}
+
 fn build_stop_categories(
     sp: &StopPlaceXml,
     role: &StopPlaceRole,
     inferred_types: &[String],
     country: &Country,
-    county_gid: &Option<String>,
-    locality_gid: &Option<String>,
+    geography: &StopGeography,
     fare_zones: &HashMap<String, FareZoneXml>,
-) -> (Vec<String>, Vec<String>) {
+) -> StopCategories {
     let source_cat = match role {
         StopPlaceRole::Parent => LEGACY_SOURCE_OPENSTREETMAP,
         StopPlaceRole::Child => LEGACY_SOURCE_GEONAMES,
@@ -261,12 +288,12 @@ fn build_stop_categories(
     indexed_cats.push(LAYER_STOP_PLACE.to_string());
     append_tariff_zone_categories(&mut indexed_cats, sp, fare_zones);
     indexed_cats.push(format!("{COUNTRY_PREFIX}{}", country.alpha2));
-    if let Some(gid) = county_gid { indexed_cats.push(county_ids_category(gid)); }
-    if let Some(gid) = locality_gid { indexed_cats.push(locality_ids_category(gid)); }
+    if let Some(gid) = &geography.county_gid { indexed_cats.push(county_ids_category(gid)); }
+    if let Some(gid) = &geography.locality_gid { indexed_cats.push(locality_ids_category(gid)); }
     if let Some(mc) = multimodal_cat { indexed_cats.push(mc); }
     indexed_cats.push(as_category(&sp.id));
 
-    (visible_cats, indexed_cats)
+    StopCategories { visible: visible_cats, indexed: indexed_cats }
 }
 
 /// Append tariff/fare zone categories in 3 passes:
@@ -334,13 +361,10 @@ fn build_stop_alt_names(sp: &StopPlaceXml, sp_name: &str, child_stop_names: &[St
     alt_names
 }
 
-#[allow(clippy::too_many_arguments)]
 fn build_stop_extra(
     sp: &StopPlaceXml,
     country: &Country,
-    county_gid: &Option<String>,
-    locality: &Option<String>,
-    locality_gid: &Option<String>,
+    geography: &StopGeography,
     visible_alt: &[String],
     visible_cats: &[String],
     inferred_types: &[String],
@@ -378,9 +402,9 @@ fn build_stop_extra(
         source: Some("nsr".to_string()),
         accuracy: Some("point".to_string()),
         country_a: Some(country.alpha3.clone()),
-        county_gid: county_gid.clone(),
-        locality: locality.clone(),
-        locality_gid: locality_gid.clone(),
+        county_gid: geography.county_gid.clone(),
+        locality: geography.locality.clone(),
+        locality_gid: geography.locality_gid.clone(),
         tariff_zones: tariff_zone_list,
         fare_zones: fare_zone_list,
         alt_name: join_osm_values(visible_alt),
@@ -393,7 +417,7 @@ fn build_stop_extra(
 }
 
 pub(crate) fn convert_gosp(
-    config: &Config,
+    stop_place: &StopPlaceConfig,
     importance_calc: &ImportanceCalculator,
     gosp: &GroupOfStopPlacesXml,
     topo_places: &HashMap<String, TopographicPlaceXml>,
@@ -401,7 +425,6 @@ pub(crate) fn convert_gosp(
     stop_by_id: &HashMap<&str, &StopPlaceXml>,
     is_secondary: bool,
 ) -> Option<NominatimPlace> {
-    let stop_place = config.stop_place.as_ref().expect("stopplace config present when converting stopplace");
     let centroid_xml = gosp.centroid.as_ref()?;
     let coord = Coordinate::new(centroid_xml.location.latitude, centroid_xml.location.longitude);
     let group_name = gosp.name.as_deref()?;
@@ -452,15 +475,23 @@ pub(crate) fn convert_gosp(
     // Real extent over the member stops' coordinates (plus the group's own
     // centroid). Photon serves it as a per-feature `extent`; zero-area boxes
     // (no resolvable members) are skipped at index time.
-    let bbox = gosp.members.as_ref()
+    let mut min_lon = f64::INFINITY;
+    let mut min_lat = f64::INFINITY;
+    let mut max_lon = f64::NEG_INFINITY;
+    let mut max_lat = f64::NEG_INFINITY;
+    for c in gosp.members.as_ref()
         .map(|m| m.refs.as_slice()).unwrap_or_default().iter()
         .filter_map(|r| stop_by_id.get(r.ref_.as_str()).copied())
         .filter_map(|sp| sp.centroid.as_ref())
         .map(|c| Coordinate::new(c.location.latitude, c.location.longitude))
         .chain(std::iter::once(coord))
-        .fold(vec![f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY], |acc, c| {
-            vec![acc[0].min(c.lon), acc[1].min(c.lat), acc[2].max(c.lon), acc[3].max(c.lat)]
-        });
+    {
+        min_lon = min_lon.min(c.lon);
+        min_lat = min_lat.min(c.lat);
+        max_lon = max_lon.max(c.lon);
+        max_lat = max_lat.max(c.lat);
+    }
+    let bbox = vec![min_lon, min_lat, max_lon, max_lat];
 
     Some(NominatimPlace {
         type_: "Place".to_string(),
@@ -707,8 +738,8 @@ mod tests {
         let importance_calc = ImportanceCalculator::new(&EMPTY_USAGE);
         let sp = make_stop_place("NSR:StopPlace:1", "Test", Some("funicular"), Some("other"));
         let result = convert_stop_place(
-            &config, &importance_calc, &sp, &HashMap::new(), &HashMap::new(),
-            &HashMap::new(), 50, &[], &[],
+            config.stop_place.as_ref().unwrap(), &importance_calc, &sp, &HashMap::new(),
+            &HashMap::new(), &HashMap::new(), 50, &[],
         ).unwrap();
         let cats = &result.content[0].categories;
         assert!(cats.iter().any(|c| c == "legacy.category.funicular"));
@@ -721,8 +752,8 @@ mod tests {
         let importance_calc = ImportanceCalculator::new(&EMPTY_USAGE);
         let sp = make_stop_place("NSR:StopPlace:1", "Test", Some("bus"), Some("onstreetBus"));
         let result = convert_stop_place(
-            &config, &importance_calc, &sp, &HashMap::new(), &HashMap::new(),
-            &HashMap::new(), 50, &[], &[],
+            config.stop_place.as_ref().unwrap(), &importance_calc, &sp, &HashMap::new(),
+            &HashMap::new(), &HashMap::new(), 50, &[],
         ).unwrap();
         let cats = &result.content[0].categories;
         assert!(!cats.iter().any(|c| c == "legacy.category.bus"));
@@ -735,8 +766,8 @@ mod tests {
         let importance_calc = ImportanceCalculator::new(&EMPTY_USAGE);
         let sp = make_stop_place("NSR:StopPlace:1", "Test", Some("rail"), Some("railStation"));
         let result = convert_stop_place(
-            &config, &importance_calc, &sp, &HashMap::new(), &HashMap::new(),
-            &HashMap::new(), 50, &[], &[],
+            config.stop_place.as_ref().unwrap(), &importance_calc, &sp, &HashMap::new(),
+            &HashMap::new(), &HashMap::new(), 50, &[],
         ).unwrap();
         let cats = &result.content[0].categories;
         assert!(cats.iter().any(|c| c == "stop_place_type.railStation"), "{cats:?}");
@@ -751,8 +782,8 @@ mod tests {
         child_types_map.insert("NSR:StopPlace:Parent".to_string(),
             vec!["onstreetBus".to_string(), "railStation".to_string(), "metroStation".to_string()]);
         let result = convert_stop_place(
-            &config, &importance_calc, &sp, &HashMap::new(), &child_types_map,
-            &HashMap::new(), 50, &[], &[],
+            config.stop_place.as_ref().unwrap(), &importance_calc, &sp, &HashMap::new(),
+            &child_types_map, &HashMap::new(), 50, &[],
         ).unwrap();
         let cats = &result.content[0].categories;
         assert!(cats.iter().any(|c| c == "legacy.category.funicular"));
@@ -819,7 +850,7 @@ mod tests {
         };
 
         let result = convert_gosp(
-            &config, &importance_calc, &gosp, &HashMap::new(),
+            config.stop_place.as_ref().unwrap(), &importance_calc, &gosp, &HashMap::new(),
             &HashMap::new(), &stop_by_id, false,
         ).unwrap();
 
@@ -856,7 +887,7 @@ mod tests {
         };
 
         let result = convert_gosp(
-            &config, &importance_calc, &gosp, &HashMap::new(),
+            config.stop_place.as_ref().unwrap(), &importance_calc, &gosp, &HashMap::new(),
             &HashMap::new(), &stop_by_id, false,
         ).unwrap();
 

@@ -5,7 +5,7 @@ use crate::common::extra::Extra;
 use crate::common::geo;
 use crate::common::importance::IMPORTANCE_FLOOR;
 use crate::common::usage::UsageBoost;
-use crate::config::Config;
+use crate::config::{Config, PoiConfig};
 use crate::target::json_writer::JsonWriter;
 use crate::target::nominatim_id::as_place_id;
 use crate::target::nominatim_place::*;
@@ -21,7 +21,7 @@ pub fn convert_all(
     is_appending: bool,
     usage: &UsageBoost,
 ) -> Result<usize, Box<dyn std::error::Error>> {
-    config.poi.as_ref().ok_or("config is missing the required `poi` section")?;
+    let poi = config.poi.as_ref().ok_or("config is missing the required `poi` section")?;
     let xml = std::fs::read_to_string(input)?;
     let topo_places = parse_topographic_places(&xml)?;
     let now = Local::now().naive_local();
@@ -29,7 +29,7 @@ pub fn convert_all(
     let entries: Vec<NominatimPlace> = topo_places
         .into_iter()
         .filter(|tp| is_valid(tp, &now))
-        .filter_map(|tp| convert_topo_place(config, &tp, usage))
+        .filter_map(|tp| convert_topo_place(poi, &tp, usage))
         .collect();
 
     let count = JsonWriter::export(&entries, output, is_appending)?;
@@ -38,20 +38,20 @@ pub fn convert_all(
 
 /// Check if a POI is currently valid based on its ValidBetween date range.
 /// Returns true if: no validity period is set, either bound is missing (open-ended),
-/// or the current time falls within the range.
+/// a bound's date is unparseable, or the current time falls within the range.
+/// Throughout, "missing means valid": an absent or unusable bound never excludes a POI.
 fn is_valid(tp: &TopographicPlaceXml, now: &NaiveDateTime) -> bool {
     let Some(vb) = &tp.valid_between else { return true };
     let from_ok = vb.from_date.as_ref().is_none_or(|d| {
-        NaiveDateTime::parse_from_str(d, "%Y-%m-%dT%H:%M:%S").map_or(true, |dt| *now >= dt)
+        NaiveDateTime::parse_from_str(d, "%Y-%m-%dT%H:%M:%S").ok().is_none_or(|dt| *now >= dt)
     });
     let to_ok = vb.to_date.as_ref().is_none_or(|d| {
-        NaiveDateTime::parse_from_str(d, "%Y-%m-%dT%H:%M:%S").map_or(true, |dt| *now <= dt)
+        NaiveDateTime::parse_from_str(d, "%Y-%m-%dT%H:%M:%S").ok().is_none_or(|dt| *now <= dt)
     });
     from_ok && to_ok
 }
 
-fn convert_topo_place(config: &Config, tp: &TopographicPlaceXml, usage: &UsageBoost) -> Option<NominatimPlace> {
-    let poi = config.poi.as_ref().expect("poi config present when converting poi");
+fn convert_topo_place(poi: &PoiConfig, tp: &TopographicPlaceXml, usage: &UsageBoost) -> Option<NominatimPlace> {
     let id = tp.id.as_deref().unwrap_or("");
     let name = tp.descriptor.as_ref()?.name.as_deref().unwrap_or("");
     let centroid_xml = tp.centroid.as_ref()?;
