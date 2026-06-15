@@ -1,23 +1,7 @@
-/// Geographic coordinate (latitude, longitude).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Coordinate {
-    pub lat: f64,
-    pub lon: f64,
-}
-
-impl Coordinate {
-    pub fn centroid(&self) -> Vec<f64> {
-        vec![round6(self.lon), round6(self.lat)]
-    }
-
-    pub fn bbox(&self) -> Vec<f64> {
-        vec![round6(self.lon), round6(self.lat), round6(self.lon), round6(self.lat)]
-    }
-}
-
-pub(crate) fn round6(v: f64) -> f64 {
-    (v * 1_000_000.0).round() / 1_000_000.0
-}
+// Use the shared canonical `Coordinate`, not an OSM-local copy: the memory win lives in
+// `CoordinateStore` (packed ints below), not the value type. Re-exported so the existing
+// `super::coordinate::Coordinate` imports across the OSM module keep resolving.
+pub(crate) use crate::common::coordinate::Coordinate;
 
 // ---------------------------------------------------------------------------
 // CoordinateStore -- open-addressing hash map storing coords as delta-encoded ints

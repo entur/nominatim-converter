@@ -5,9 +5,6 @@ use crate::common::category::{
     LEGACY_CATEGORY_PREFIX, LEGACY_LAYER_ADDRESS, LEGACY_SOURCE_WHOSONFIRST, SOURCE_OSM,
 };
 use crate::common::country::Country;
-// The OSM module keeps its own compact Coordinate for CoordinateStore; this alias is the bridge
-// to the shared geo type used for country lookup.
-use crate::common::coordinate::Coordinate as GeoCoordinate;
 use crate::common::extra::Extra;
 use crate::common::geo;
 use crate::common::importance::ImportanceCalculator;
@@ -19,12 +16,10 @@ use crate::target::nominatim_place::*;
 
 use super::admin::AdministrativeBoundary;
 use super::admin::AdministrativeBoundaryIndex;
-use super::coordinate::Coordinate;
+use super::coordinate::{Coordinate, CoordinateStore};
 use super::geometry::calculate_centroid;
 use super::popularity::OsmPopularityCalculator;
 use super::street::StreetIndex;
-
-use super::coordinate::CoordinateStore;
 
 const ACCURACY_POINT: &str = "point";
 const ACCURACY_POLYGON: &str = "polygon";
@@ -411,10 +406,7 @@ pub(crate) fn determine_country(
             tags.get("addr:country")
                 .and_then(|id| Country::parse(id))
         })
-        .or_else(|| {
-            let c = GeoCoordinate::new(coord.lat, coord.lon);
-            geo::get_country(&c)
-        })
+        .or_else(|| geo::get_country(coord))
 }
 
 /// Extract a 2-letter country code from OSM admin relation tags.
