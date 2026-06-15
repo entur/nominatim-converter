@@ -22,6 +22,13 @@ use std::path::Path;
 /// `[floor, 1.0]` invariant always holds even if floor is raised above 0.001.
 const SECONDARY_GOSP_IMPORTANCE: f64 = 0.001;
 
+/// Cap on non-secondary GoSP importance. Member popularities are multiplied
+/// (`calculate_gosp_popularity`), so any busy hub saturates to 1.0 and the group outranks an exact
+/// match on its own member stop ("Oslo" over "Oslo bussterminal"). Capping just below that keeps
+/// the member match winning while the group still tops bare-name/typo queries. Empirically tuned;
+/// the viable band is tight (~0.88-0.96), so re-check the `oslo`/`olso` acceptance tests if changed.
+const GOSP_IMPORTANCE_CAP: f64 = 0.92;
+
 use super::popularity::calculate_stop_popularity;
 use super::xml::*;
 
@@ -432,14 +439,15 @@ pub(crate) fn convert_gosp(
     let GospGeography { locality, locality_gid, county, county_gid } =
         resolve_gosp_geography(gosp, topo_places, stop_by_id);
 
-    let gos_pop = calculate_gosp_popularity(gosp, stop_popularities);
+    let gosp_pop = calculate_gosp_popularity(gosp, stop_popularities);
     let country = geo::get_country(&coord).unwrap_or_else(Country::no);
-    // Clamp to `[floor, 1.0]` per the Nominatim 0-1 spec; secondary GoSPs ride the configured
-    // floor (never below) so they sink under real stops in autocomplete.
+    // Two-sided clamp within the Nominatim 0-1 spec: secondary GoSPs ride the configured floor
+    // (never below) so they sink under real stops; non-secondary GoSPs are capped at
+    // `GOSP_IMPORTANCE_CAP` (never above) so they don't swallow an exact member-name match.
     let raw_importance = if is_secondary {
         SECONDARY_GOSP_IMPORTANCE.max(IMPORTANCE_FLOOR)
     } else {
-        importance_calc.calculate_importance(gos_pop)
+        importance_calc.calculate_importance(gosp_pop).min(GOSP_IMPORTANCE_CAP)
     };
     let importance = RawNumber::from_f64_6dp(raw_importance);
 
@@ -572,6 +580,7 @@ fn resolve_gosp_geography(
 
 /// GoSP popularity is the product of its members' popularities. Empty product is 1.0,
 /// which lands on the importance floor for GoSPs whose members couldn't be resolved.
+/// The resulting importance is capped at `GOSP_IMPORTANCE_CAP` by the caller.
 fn calculate_gosp_popularity(
     gosp: &GroupOfStopPlacesXml,
     stop_popularities: &HashMap<String, i64>,
@@ -893,6 +902,57 @@ mod tests {
 
         let bbox = &result.content[0].bbox;
         assert_eq!(bbox, &vec![10.70, 59.90, 10.80, 59.95], "bbox must span the member stops");
+    }
+
+    #[test]
+    fn convert_caps_non_secondary_gosp_importance() {
+        // A hub whose member popularities multiply past the importance ceiling must be pinned at
+        // GOSP_IMPORTANCE_CAP, not 1.0, so an exact match on a member stop can still outrank it.
+        let config = test_config();
+        let importance_calc = ImportanceCalculator::new(&EMPTY_USAGE);
+
+        let a = make_stop_place("NSR:StopPlace:337", "Oslo S", Some("rail"), Some("railStation"));
+        let b = make_stop_place("NSR:StopPlace:58293", "Oslo Bussterminal", Some("bus"), Some("busStation"));
+        let stop_by_id: HashMap<&str, &StopPlaceXml> =
+            HashMap::from([("NSR:StopPlace:337", &a), ("NSR:StopPlace:58293", &b)]);
+        let pops = HashMap::from([
+            ("NSR:StopPlace:337".to_string(), 250_000_i64),
+            ("NSR:StopPlace:58293".to_string(), 1_000_i64),
+        ]); // product = 2.5e8 -> importance saturates well above the cap
+
+        let gosp = GroupOfStopPlacesXml {
+            id: "NSR:GroupOfStopPlaces:1".to_string(),
+            name: Some("Oslo".to_string()),
+            centroid: Some(CentroidXml { location: LocationXml { longitude: 10.75, latitude: 59.91 } }),
+            members: Some(MembersXml {
+                refs: vec![
+                    RefAttr { ref_: "NSR:StopPlace:337".to_string() },
+                    RefAttr { ref_: "NSR:StopPlace:58293".to_string() },
+                ],
+            }),
+        };
+
+        let result = convert_gosp(
+            config.stop_place.as_ref().unwrap(), &importance_calc, &gosp, &HashMap::new(),
+            &pops, &stop_by_id, false,
+        ).unwrap();
+
+        assert_eq!(result.content[0].importance.0, RawNumber::from_f64_6dp(GOSP_IMPORTANCE_CAP).0,
+            "saturating non-secondary GoSP importance must be capped at GOSP_IMPORTANCE_CAP");
+    }
+
+    #[test]
+    fn gosp_popularity_floors_when_no_members_resolve() {
+        let gosp = GroupOfStopPlacesXml {
+            id: "NSR:GroupOfStopPlaces:1".to_string(),
+            name: Some("Oslo".to_string()),
+            centroid: None,
+            members: Some(MembersXml {
+                refs: vec![RefAttr { ref_: "NSR:StopPlace:missing".to_string() }],
+            }),
+        };
+        // No resolvable members -> MIN_POPULARITY (1.0), which normalizes to the importance floor.
+        assert_eq!(calculate_gosp_popularity(&gosp, &HashMap::new()), 1.0);
     }
 
     #[test]
