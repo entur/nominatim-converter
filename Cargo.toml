@@ -13,6 +13,7 @@ chrono = { version = "0.4", default-features = false, features = ["std", "clock"
 proj = { version = "0.31", features = ["bundled_proj"] }
 country-boundaries = "1"
 ureq = "3"
+base64 = "0.22"
 zip = { version = "8", default-features = false, features = ["deflate"] }
 iso3166-static = "0.4.1"
 rusqlite = { version = "0.35", features = ["bundled"] }

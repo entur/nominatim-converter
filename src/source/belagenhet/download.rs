@@ -1,3 +1,4 @@
+use base64::prelude::{BASE64_STANDARD, Engine};
 use crate::common::input::{
     CacheOptions, DownloadStream, ResolvedInput, USER_AGENT, fetch_and_resolve, is_cached,
 };
@@ -54,7 +55,7 @@ pub(crate) fn municipality_url(kommun_id: &str) -> String {
 
 fn fetch_with_basic_auth(url: &str) -> Result<DownloadStream, Box<dyn std::error::Error>> {
     let (user, pass) = load_credentials()?;
-    let encoded = base64_encode(format!("{user}:{pass}").as_bytes());
+    let encoded = BASE64_STANDARD.encode(format!("{user}:{pass}"));
 
     // Errors are returned raw (not stringified) so the retry layer in
     // `fetch_and_resolve` can tell transient failures from permanent ones.
@@ -84,32 +85,6 @@ fn load_credentials() -> Result<(String, String), Box<dyn std::error::Error>> {
     Ok((user, pass))
 }
 
-/// Hand-rolled base64 (RFC 4648, no line wrapping) to avoid pulling in a
-/// direct dependency for a single Basic-auth header.
-fn base64_encode(input: &[u8]) -> String {
-    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut result = String::new();
-    for chunk in input.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
-        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
-        let triple = (b0 << 16) | (b1 << 8) | b2;
-        result.push(CHARS[((triple >> 18) & 0x3F) as usize] as char);
-        result.push(CHARS[((triple >> 12) & 0x3F) as usize] as char);
-        if chunk.len() > 1 {
-            result.push(CHARS[((triple >> 6) & 0x3F) as usize] as char);
-        } else {
-            result.push('=');
-        }
-        if chunk.len() > 2 {
-            result.push(CHARS[(triple & 0x3F) as usize] as char);
-        } else {
-            result.push('=');
-        }
-    }
-    result
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,14 +110,5 @@ mod tests {
     fn test_describe_download_error_passes_non_http_errors_through() {
         let err: Box<dyn std::error::Error> = "disk full".into();
         assert_eq!(describe_download_error(err).to_string(), "disk full");
-    }
-
-    #[test]
-    fn test_base64_encode() {
-        assert_eq!(base64_encode(b"user:pass"), "dXNlcjpwYXNz");
-        assert_eq!(base64_encode(b"hello"), "aGVsbG8=");
-        assert_eq!(base64_encode(b"a"), "YQ==");
-        assert_eq!(base64_encode(b"ab"), "YWI=");
-        assert_eq!(base64_encode(b"abc"), "YWJj");
     }
 }
