@@ -34,4 +34,7 @@ pub struct Extra {
     pub transport_mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop_place_type: Option<String>,
+    /// Stop place hierarchy role ("parent"/"child"/"standalone"); set only for stop places.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop_place_role: Option<String>,
 }

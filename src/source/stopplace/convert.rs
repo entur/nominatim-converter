@@ -131,13 +131,25 @@ fn log_secondary_gosps(secondary_gosps: &HashSet<&str>, groups: &[GroupOfStopPla
     }
 }
 
-/// A stop place's role in the parent-child hierarchy. Affects which source category
-/// and multimodal marker are assigned in the output.
+/// A stop place's role in the parent-child hierarchy. Drives the source category, the
+/// `multimodal.*`/`source.nsr.*` categories, and the `extra.stop_place_role` response field.
 #[derive(Debug, PartialEq)]
 enum StopPlaceRole {
     Child,
     Parent,
     Standalone,
+}
+
+impl StopPlaceRole {
+    /// Canonical role name: the wire value of `extra.stop_place_role` and the `source.nsr.*`
+    /// suffix. Must match the proxy's `V3Result.StopPlaceRole` enum names.
+    fn as_str(&self) -> &'static str {
+        match self {
+            StopPlaceRole::Parent => "parent",
+            StopPlaceRole::Child => "child",
+            StopPlaceRole::Standalone => "standalone",
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -201,15 +213,15 @@ pub(crate) fn convert_stop_place(
             centroid: coord.centroid(),
             bbox: coord.bbox(),
             extra: build_stop_extra(
-                sp, &country, &geography, &visible_alt, &visible_cats, &inferred_types, child_stops,
+                sp, &role, &country, &geography, &visible_alt, &visible_cats, &inferred_types, child_stops,
             ),
         }],
     };
     Some(entry)
 }
 
-/// Determine role: if this stop has children → Parent, if it references a parent → Child,
-/// otherwise → Standalone.
+/// Determine role: has children → Parent, else references a parent → Child, else Standalone.
+/// Children win over a parent ref; NSR's hierarchy is single-level, so a node shouldn't be both.
 fn classify_role(child_types: &[String], has_parent: bool) -> StopPlaceRole {
     if !child_types.is_empty() {
         StopPlaceRole::Parent
@@ -286,11 +298,7 @@ fn build_stop_categories(
         // First-class facet for v3's stopPlaceTypes filter; legacy.category.* stays for v2.
         indexed_cats.push(format!("{STOP_PLACE_TYPE_PREFIX}{t}"));
     }
-    indexed_cats.push(format!("{SOURCE_NSR}.{}", match role {
-        StopPlaceRole::Child => "child",
-        StopPlaceRole::Parent => "parent",
-        StopPlaceRole::Standalone => "standalone",
-    }));
+    indexed_cats.push(format!("{SOURCE_NSR}.{}", role.as_str()));
     indexed_cats.push(SOURCE_NSR.to_string());
     indexed_cats.push(LAYER_STOP_PLACE.to_string());
     append_tariff_zone_categories(&mut indexed_cats, sp, fare_zones);
@@ -368,8 +376,10 @@ fn build_stop_alt_names(sp: &StopPlaceXml, sp_name: &str, child_stop_names: &[St
     alt_names
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_stop_extra(
     sp: &StopPlaceXml,
+    role: &StopPlaceRole,
     country: &Country,
     geography: &StopGeography,
     visible_alt: &[String],
@@ -377,6 +387,7 @@ fn build_stop_extra(
     inferred_types: &[String],
     child_stops: &[&StopPlaceXml],
 ) -> Extra {
+    let stop_place_role = role.as_str();
     // Split the stop place's <TariffZoneRef>s by ref shape into two output fields, mirroring the
     // category-prefix split in `append_tariff_zone_categories` so downstream consumers can read
     // each namespace cleanly without substring inspection.
@@ -419,6 +430,7 @@ fn build_stop_extra(
         tags: join_osm_values(visible_cats),
         transport_mode,
         stop_place_type: stop_place_type_str,
+        stop_place_role: Some(stop_place_role.to_string()),
         ..Default::default()
     }
 }
@@ -804,6 +816,42 @@ mod tests {
         assert!(cats.iter().any(|c| c == "stop_place_type.railStation"));
         assert!(cats.iter().any(|c| c == "stop_place_type.metroStation"));
         assert!(cats.iter().any(|c| c == "multimodal.parent"));
+        // First-class per-feature role surfaced to the v3 proxy via extra.
+        assert_eq!(result.content[0].extra.stop_place_role.as_deref(), Some("parent"));
+    }
+
+    #[test]
+    fn extra_stop_place_role_matches_classification() {
+        let config = test_config();
+        let importance_calc = ImportanceCalculator::new(&EMPTY_USAGE);
+
+        // Standalone: no children, no parent ref.
+        let standalone = make_stop_place("NSR:StopPlace:Solo", "Solo", Some("bus"), Some("onstreetBus"));
+        let res = convert_stop_place(
+            config.stop_place.as_ref().unwrap(), &importance_calc, &standalone, &HashMap::new(),
+            &HashMap::new(), &HashMap::new(), 50, &[],
+        ).unwrap();
+        assert_eq!(res.content[0].extra.stop_place_role.as_deref(), Some("standalone"));
+
+        // Child: carries a ParentSiteRef.
+        let mut child = make_stop_place("NSR:StopPlace:Kid", "Kid", Some("bus"), Some("onstreetBus"));
+        child.parent_site_ref = Some(RefAttr { ref_: "NSR:StopPlace:Parent".to_string() });
+        let res = convert_stop_place(
+            config.stop_place.as_ref().unwrap(), &importance_calc, &child, &HashMap::new(),
+            &HashMap::new(), &HashMap::new(), 50, &[],
+        ).unwrap();
+        assert_eq!(res.content[0].extra.stop_place_role.as_deref(), Some("child"));
+
+        // Children win over a parent ref (not expected in NSR, but pinned).
+        let mut both = make_stop_place("NSR:StopPlace:Both", "Both", Some("bus"), Some("onstreetBus"));
+        both.parent_site_ref = Some(RefAttr { ref_: "NSR:StopPlace:Grandparent".to_string() });
+        let mut child_types = HashMap::new();
+        child_types.insert("NSR:StopPlace:Both".to_string(), vec!["onstreetBus".to_string()]);
+        let res = convert_stop_place(
+            config.stop_place.as_ref().unwrap(), &importance_calc, &both, &HashMap::new(),
+            &child_types, &HashMap::new(), 50, &[],
+        ).unwrap();
+        assert_eq!(res.content[0].extra.stop_place_role.as_deref(), Some("parent"));
     }
 
     // ===== Full conversion tests =====
@@ -831,6 +879,17 @@ mod tests {
         assert!(content.contains("NSR:GroupOfStopPlaces:72"));
         assert!(content.contains("\"name\":\"Oslo\""));
         assert!(content.contains(LAYER_GOSP));
+
+        // stop_place_role is stop-place-only: GOSP lines must omit it, stop lines must carry it.
+        // Keyed on the layer tag so GOSP member refs mentioning stop ids don't false-match.
+        for line in content.lines().filter(|l| l.contains(LAYER_GOSP)) {
+            assert!(!line.contains("\"stop_place_role\""), "GOSP must not carry stop_place_role: {line}");
+        }
+        assert!(
+            content.lines().any(|l| l.contains("\"stop_place_role\"")),
+            "expected at least one stop place to carry stop_place_role",
+        );
+
         let _ = std::fs::remove_file(&output);
     }
 
