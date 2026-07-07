@@ -121,6 +121,8 @@ fn cache_paths(dir: &Path, url: &str) -> (PathBuf, Option<PathBuf>) {
 /// Resolve an input that may be a local file or an HTTP(S) URL.
 /// For URLs, downloads via a default GET request. ZIP archives are extracted
 /// to the first entry matching `extract_glob` (or the first non-directory entry).
+/// Local `.zip` inputs are extracted the same way (to a temp file); other local
+/// files are used in place.
 ///
 /// When `cache.dir` is set, downloads are persisted and reused on subsequent runs.
 pub fn resolve_input(
@@ -129,10 +131,25 @@ pub fn resolve_input(
     cache: &CacheOptions,
 ) -> Result<ResolvedInput, Box<dyn std::error::Error>> {
     let input_str = input.to_string_lossy();
-    if !input_str.starts_with("http://") && !input_str.starts_with("https://") {
-        return Ok(ResolvedInput::persistent(input.to_path_buf()));
+    if input_str.starts_with("http://") || input_str.starts_with("https://") {
+        return fetch_and_resolve(input_str.as_ref(), extract_glob, cache, default_fetch);
     }
-    fetch_and_resolve(input_str.as_ref(), extract_glob, cache, default_fetch)
+    // Local file. Auto-extract ZIP archives to a temp file (cleaned up on drop) so the CLI's
+    // documented "ZIP archives are extracted automatically" holds for local inputs too, matching
+    // the URL path -- without it, a local `.zip` is fed straight to a converter as raw bytes.
+    // Non-ZIP files are used in place. Local extraction isn't cached: there's nothing to
+    // re-download, extraction is cheap, and a path-keyed cache would risk serving a stale extract
+    // after the file changes.
+    if is_zip_path(input) {
+        return Ok(ResolvedInput::temp(extract_from_zip(input, extract_glob)?));
+    }
+    Ok(ResolvedInput::persistent(input.to_path_buf()))
+}
+
+/// Whether `path` names a ZIP archive, by extension (case-insensitive). Mirrors the
+/// extension-based `is_zip` decision `parse_url` makes for download URLs.
+fn is_zip_path(path: &Path) -> bool {
+    path.extension().is_some_and(|e| e.eq_ignore_ascii_case("zip"))
 }
 
 /// Download a URL (or load from cache), extracting ZIPs if needed.
@@ -463,10 +480,44 @@ fn extract_from_zip_to(
     let reader = BufReader::new(file);
     let mut archive = zip::ZipArchive::new(reader)?;
     let mut entry = archive.by_index(index)?;
-    let mut out_file = File::create(out_path)?;
-    io::copy(&mut entry, &mut out_file)?;
+    let expected = entry.size();
 
-    let size_mb = out_file.metadata()?.len() as f64 / (1024.0 * 1024.0);
+    // Extract to a temp sibling, then rename into place. Writing straight to `out_path`
+    // would leave a truncated file at the canonical cache path if the process is killed
+    // (SIGTERM/crash/OOM) or the disk fills mid-copy - and the cache trusts entries by
+    // existence alone, so every later run would silently reuse the corrupt file. The
+    // rename is atomic on the same filesystem, so `out_path` only ever appears complete.
+    let tmp_path = append_suffix(out_path, ".partial");
+    // Run the fallible steps in a closure so we can delete the temp on ANY failure (short copy,
+    // I/O error, or a killed rename) - like download_with_retry, so a partial is never left for a
+    // later run to trust.
+    let mut extract = || -> Result<u64, Box<dyn std::error::Error>> {
+        let mut out_file = File::create(&tmp_path)?;
+        let copied = io::copy(&mut entry, &mut out_file)?;
+        // Flush and close before the rename: a crash then can't leave a renamed-but-empty file,
+        // and a deferred write error (e.g. ENOSPC under delayed allocation) surfaces here.
+        out_file.sync_all()?;
+        drop(out_file);
+        // A `Read` that hits EOF early returns `Ok`, so `io::copy` won't flag a short copy itself;
+        // compare against the size the ZIP entry declares.
+        if copied != expected {
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, format!(
+                "extracted {copied} bytes from '{entry_name}' in {} but the ZIP entry declares {expected}",
+                zip_path.display(),
+            )).into());
+        }
+        std::fs::rename(&tmp_path, out_path)?;
+        Ok(copied)
+    };
+    let copied = match extract() {
+        Ok(copied) => copied,
+        Err(e) => {
+            std::fs::remove_file(&tmp_path).ok();
+            return Err(e);
+        }
+    };
+
+    let size_mb = copied as f64 / (1024.0 * 1024.0);
     eprintln!("Extracted '{entry_name}' -> {} ({size_mb:.1} MB)", out_path.display());
     Ok(())
 }
@@ -594,6 +645,22 @@ mod tests {
         let local = Path::new("/some/local/file.csv");
         let resolved = resolve_input(local, Some("*.csv"), &cache).unwrap();
         assert_eq!(resolved.path(), local);
+    }
+
+    #[test]
+    fn test_resolve_input_local_zip_is_extracted() {
+        // A local .zip must be extracted (matching the URL path and the CLI help), not
+        // handed to the converter as raw bytes.
+        let zip = create_test_zip(&[("data.gml", b"<gml/>")]);
+        let resolved = resolve_input(&zip, Some("*.gml"), &CacheOptions::default()).unwrap();
+        assert_ne!(resolved.path(), zip.as_path(), "zip should be extracted, not returned as-is");
+        assert_eq!(std::fs::read(resolved.path()).unwrap(), b"<gml/>");
+
+        // The extracted temp is cleaned up when the ResolvedInput drops.
+        let extracted = resolved.path().to_path_buf();
+        drop(resolved);
+        assert!(!extracted.exists(), "extracted temp should be removed on drop");
+        std::fs::remove_file(&zip).ok();
     }
 
     #[test]
@@ -732,6 +799,19 @@ mod tests {
 
         std::fs::remove_file(&zip_path).unwrap();
         std::fs::remove_file(&extracted).unwrap();
+    }
+
+    #[test]
+    fn test_extract_to_cleans_up_partial_on_success() {
+        let zip_path = create_test_zip(&[("data.gml", b"<gml>hello</gml>")]);
+        let out = make_temp_path("gml");
+        extract_from_zip_to(&zip_path, Some("*.gml"), &out).unwrap();
+
+        assert_eq!(std::fs::read(&out).unwrap(), b"<gml>hello</gml>");
+        assert!(!append_suffix(&out, ".partial").exists(), "no .partial temp should remain");
+
+        std::fs::remove_file(&zip_path).ok();
+        std::fs::remove_file(&out).ok();
     }
 
     #[test]
