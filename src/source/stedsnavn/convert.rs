@@ -87,8 +87,14 @@ pub(crate) fn convert_to_nominatim(entry: &StedsnavnEntry, stedsnavn: &Stedsnavn
         .filter(|s| s.as_str() != entry.stedsnavn)
         .cloned().collect();
 
+    // Popularity by place type ("by" ranks above "tettsteddel", etc.), falling back to the
+    // flat default_value for any type not listed in the config.
+    let popularity = stedsnavn.type_popularity
+        .get(&entry.navneobjekttype)
+        .copied()
+        .unwrap_or(stedsnavn.default_value);
     let importance = RawNumber::from_f64_6dp(
-        importance_calc.calculate_importance_for(&id, stedsnavn.default_value)
+        importance_calc.calculate_importance_for(&id, popularity)
     );
     NominatimPlace {
         type_: "Place".to_string(),
@@ -284,6 +290,43 @@ mod tests {
             let imp: f64 = place.content[0].importance.0.parse().unwrap();
             assert!(imp > 0.0 && imp <= 1.0);
         }
+    }
+
+    #[test]
+    fn type_popularity_raises_importance_for_listed_type() {
+        let xml = std::fs::read_to_string(test_data_path("bydel.gml")).unwrap();
+        let entries = parse_gml(&xml).unwrap();
+        let importance_calc = ImportanceCalculator::new(&EMPTY_USAGE);
+        let ntype = entries[0].navneobjekttype.clone();
+
+        // A high popularity for this entry's own place type must lift it well above the floor,
+        // even though default_value alone (1.0) would collapse it to the floor.
+        let cfg: StedsnavnConfig = serde_json::from_str(&format!(
+            r#"{{ "input": {{ "region": "03" }}, "defaultValue": 1.0,
+                 "typePopularity": {{ "{ntype}": 1000000.0 }}, "rankAddress": 16 }}"#,
+        )).unwrap();
+
+        let place = convert_to_nominatim(&entries[0], &cfg, &importance_calc);
+        let imp: f64 = place.content[0].importance.0.parse().unwrap();
+        assert!(imp > 0.5, "listed type should raise importance above floor, got {imp}");
+    }
+
+    #[test]
+    fn type_popularity_falls_back_to_default_value() {
+        let xml = std::fs::read_to_string(test_data_path("bydel.gml")).unwrap();
+        let entries = parse_gml(&xml).unwrap();
+        let importance_calc = ImportanceCalculator::new(&EMPTY_USAGE);
+
+        // Empty map -> every type falls back to default_value (1.0 -> the floor).
+        let cfg: StedsnavnConfig = serde_json::from_str(
+            r#"{ "input": { "region": "03" }, "defaultValue": 1.0,
+                 "typePopularity": {}, "rankAddress": 16 }"#,
+        ).unwrap();
+
+        let place = convert_to_nominatim(&entries[0], &cfg, &importance_calc);
+        let imp: f64 = place.content[0].importance.0.parse().unwrap();
+        assert!((imp - crate::common::importance::IMPORTANCE_FLOOR).abs() < 1e-9,
+            "unlisted type should fall back to the floor, got {imp}");
     }
 
     #[test]

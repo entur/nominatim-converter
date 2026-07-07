@@ -32,6 +32,18 @@ const GOSP_IMPORTANCE_CAP: f64 = 0.92;
 use super::popularity::calculate_stop_popularity;
 use super::xml::*;
 
+/// Apply the configured non-Norwegian importance penalty. A stop/GoSP resolved to any country
+/// other than Norway has its importance multiplied by `factor` (1.0 = no penalty), then clamped
+/// to `[IMPORTANCE_FLOOR, 1.0]` so the result stays a valid Photon importance even if `factor`
+/// is misconfigured above 1.0.
+fn apply_foreign_penalty(importance: f64, country: &Country, factor: f64) -> f64 {
+    if country.alpha2 == "no" {
+        importance
+    } else {
+        (importance * factor).clamp(IMPORTANCE_FLOOR, 1.0)
+    }
+}
+
 pub fn convert_all(
     config: &Config,
     input: &Path,
@@ -170,7 +182,11 @@ pub(crate) fn convert_stop_place(
     let geography = resolve_stop_geography(sp, topo_places);
     let country = determine_country(topo_places, sp, &coord);
     let child_types = stop_place_types.get(&sp.id).cloned().unwrap_or_default();
-    let importance = RawNumber::from_f64_6dp(importance_calc.calculate_importance(popularity as f64));
+    let importance = RawNumber::from_f64_6dp(apply_foreign_penalty(
+        importance_calc.calculate_importance(popularity as f64),
+        &country,
+        stop_place.foreign_importance_factor,
+    ));
     let role = classify_role(&child_types, sp.parent_site_ref.is_some());
 
     let inferred_types: Vec<String> = child_types
@@ -459,7 +475,8 @@ pub(crate) fn convert_gosp(
     let raw_importance = if is_secondary {
         SECONDARY_GOSP_IMPORTANCE.max(IMPORTANCE_FLOOR)
     } else {
-        importance_calc.calculate_importance(gosp_pop).min(GOSP_IMPORTANCE_CAP)
+        let capped = importance_calc.calculate_importance(gosp_pop).min(GOSP_IMPORTANCE_CAP);
+        apply_foreign_penalty(capped, &country, stop_place.foreign_importance_factor)
     };
     let importance = RawNumber::from_f64_6dp(raw_importance);
 
@@ -667,6 +684,31 @@ mod tests {
 
     static EMPTY_USAGE: std::sync::LazyLock<UsageBoost> =
         std::sync::LazyLock::new(UsageBoost::empty);
+
+    // ===== Foreign importance penalty tests =====
+
+    #[test]
+    fn foreign_penalty_leaves_norwegian_untouched() {
+        assert_eq!(apply_foreign_penalty(0.92, &Country::no(), 0.6), 0.92);
+    }
+
+    #[test]
+    fn foreign_penalty_scales_non_norwegian() {
+        // A foreign GoSP at the cap (0.92) with a 0.6 factor lands below a domestic city;
+        // Country::se() stands in for any non-Norwegian country.
+        assert!((apply_foreign_penalty(0.92, &Country::se(), 0.6) - 0.552).abs() < 1e-9);
+    }
+
+    #[test]
+    fn foreign_penalty_floors_result() {
+        // A tiny foreign importance times a small factor can't fall below the floor.
+        assert_eq!(apply_foreign_penalty(IMPORTANCE_FLOOR, &Country::se(), 0.1), IMPORTANCE_FLOOR);
+    }
+
+    #[test]
+    fn foreign_penalty_factor_one_is_noop() {
+        assert_eq!(apply_foreign_penalty(0.5, &Country::se(), 1.0), 0.5);
+    }
 
     // ===== Transport mode formatting tests =====
 
@@ -998,6 +1040,46 @@ mod tests {
 
         assert_eq!(result.content[0].importance.0, RawNumber::from_f64_6dp(GOSP_IMPORTANCE_CAP).0,
             "saturating non-secondary GoSP importance must be capped at GOSP_IMPORTANCE_CAP");
+    }
+
+    #[test]
+    fn convert_gosp_applies_foreign_penalty_after_cap() {
+        // End-to-end check that apply_foreign_penalty is wired into convert_gosp: a saturating
+        // GoSP in a non-Norwegian country (Stockholm centroid) is capped at GOSP_IMPORTANCE_CAP
+        // and THEN penalized, so the two compose: 0.92 * 0.6 = 0.552.
+        let sp: StopPlaceConfig = serde_json::from_str(
+            r#"{ "input": { "file": "unused" }, "defaultValue": 50, "rankAddress": 30,
+                 "foreignImportanceFactor": 0.6,
+                 "stopTypeFactors": { "railStation": 2.0, "busStation": 2.0 },
+                 "interchangeFactors": { "preferredInterchange": 10.0 } }"#,
+        ).unwrap();
+        let importance_calc = ImportanceCalculator::new(&EMPTY_USAGE);
+
+        let a = make_stop_place("NSR:StopPlace:337", "T-Centralen", Some("rail"), Some("railStation"));
+        let b = make_stop_place("NSR:StopPlace:58293", "Cityterminalen", Some("bus"), Some("busStation"));
+        let stop_by_id: HashMap<&str, &StopPlaceXml> =
+            HashMap::from([("NSR:StopPlace:337", &a), ("NSR:StopPlace:58293", &b)]);
+        let pops = HashMap::from([
+            ("NSR:StopPlace:337".to_string(), 250_000_i64),
+            ("NSR:StopPlace:58293".to_string(), 1_000_i64),
+        ]); // product saturates well above the cap
+
+        let gosp = GroupOfStopPlacesXml {
+            id: "NSR:GroupOfStopPlaces:1".to_string(),
+            name: Some("Stockholm".to_string()),
+            centroid: Some(CentroidXml { location: LocationXml { longitude: 18.0686, latitude: 59.3293 } }),
+            members: Some(MembersXml {
+                refs: vec![
+                    RefAttr { ref_: "NSR:StopPlace:337".to_string() },
+                    RefAttr { ref_: "NSR:StopPlace:58293".to_string() },
+                ],
+            }),
+        };
+
+        let result = convert_gosp(&sp, &importance_calc, &gosp, &HashMap::new(), &pops, &stop_by_id, false).unwrap();
+
+        assert_eq!(result.content[0].importance.0, RawNumber::from_f64_6dp(GOSP_IMPORTANCE_CAP * 0.6).0,
+            "foreign GoSP importance must be the cap (0.92) times foreignImportanceFactor (0.6)");
     }
 
     #[test]

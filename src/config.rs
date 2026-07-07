@@ -95,6 +95,13 @@ pub struct PoiFilter {
 pub struct StedsnavnConfig {
     pub input: SourceInput,
     pub default_value: f64,
+    /// Per-place-type popularity keyed by SSR `navneobjekttype` (e.g. "by", "tettsted",
+    /// "bydel"). Lets a city outrank a hamlet instead of every place name collapsing to the
+    /// same importance. Types absent from the map fall back to `default_value`. The value is a
+    /// popularity fed to the shared log10 normalization in `common::importance`, not an
+    /// importance directly.
+    #[serde(default)]
+    pub type_popularity: std::collections::HashMap<String, f64>,
     pub rank_address: i32,
     #[serde(default)]
     pub min_lines: Option<usize>,
@@ -127,6 +134,14 @@ pub struct StopPlaceConfig {
     pub input: SourceInput,
     pub default_value: i64,
     pub rank_address: i32,
+    /// Multiplier applied to the importance of stops/GoSPs that resolve to a country other than
+    /// Norway, so foreign hubs (e.g. the Berlin stop group) don't outrank Norwegian places on a
+    /// bare prefix like "ber". `1.0` = no penalty. Applied after normalization and the GoSP cap,
+    /// then clamped to the valid importance range. Importance is only one additive term in
+    /// Photon's final rank, so this mainly breaks near-ties; ~0.6-0.7 puts a capped foreign hub
+    /// (0.92) below a Norwegian city (~0.72). Validate changes with an autocomplete acceptance test.
+    #[serde(default = "default_foreign_importance_factor")]
+    pub foreign_importance_factor: f64,
     pub stop_type_factors: std::collections::HashMap<String, f64>,
     pub interchange_factors: std::collections::HashMap<String, f64>,
     /// Group-of-stop-places tuning. GoSPs are parsed from the same StopPlace NeTEx input and
@@ -156,6 +171,8 @@ pub struct GroupOfStopPlacesConfig {
 }
 
 fn default_gosp_rank() -> i32 { 30 }
+
+fn default_foreign_importance_factor() -> f64 { 1.0 }
 
 impl Default for GroupOfStopPlacesConfig {
     fn default() -> Self {
