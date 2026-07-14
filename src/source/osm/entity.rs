@@ -313,7 +313,7 @@ fn build_visible_categories(tags: &BTreeMap<&str, &str>) -> Vec<String> {
         LEGACY_LAYER_ADDRESS.to_string(),
         format!("{}poi", LEGACY_CATEGORY_PREFIX),
     ];
-    for (_, &v) in tags.iter() {
+    for &v in tags.values() {
         cats.push(format!("{}{}", LEGACY_CATEGORY_PREFIX, v));
     }
     cats
