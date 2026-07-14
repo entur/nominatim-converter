@@ -53,7 +53,7 @@ nominatim-converter --usage popular-stops.csv stopplace -i stops.xml -o stops.nd
 
 (An explicit `--usage` path also overrides the `usage` section's `input` for a `build` run.)
 
-When `--usage` is set, output **deliberately diverges** from the original Java converter for any boosted entity. Do not use `compare-ndjson.py` against the Java baseline as a regression check in that mode - importance values will differ. Without `--usage`, output remains bit-identical and the comparison still applies.
+When `--usage` is set, output **deliberately diverges** from the original Java converter for any boosted entity - importance values will differ. Without `--usage`, output remains bit-identical.
 
 GoSP popularity is the product of its member stops' (boosted) popularities, then run through `ImportanceCalculator::calculate_importance`, which clamps the output to `[floor, 1.0]` per the Nominatim 0-1 specification. Since the product saturates to 1.0 for any busy hub, non-secondary GoSP importance is then capped at `GOSP_IMPORTANCE_CAP` (0.92) so a city GoSP doesn't outrank an exact match on one of its own member stops ("Oslo" over "Oslo bussterminal"). Far-focus major cities outrank near-focus same-prefix streets via the geocoder proxy's request-side weight defaults (Photon `location_bias_scale ~ 0.5`), not via importance values above 1.
 
@@ -102,27 +102,6 @@ The OSM converter (`src/source/osm/`) has several critical patterns for output c
 - `src/target/` — Output format (NDJSON schema, ID generation, JSON writer)
 - `src/config.rs` — `converter.json` deserialization
 - `data/` — Embedded binary data (country boundaries)
-
-## Testing against the original converter output
-
-Use the comparison tool for validation:
-
-```bash
-# Run both converters
-java -jar converter-all.jar stopplace -i input.xml -o /tmp/original.ndjson -f
-./target/release/nominatim-converter stopplace -i input.xml -o /tmp/rust.ndjson -f -c converter.json
-
-# Compare with the reusable tool
-python3 compare-ndjson.py /tmp/original.ndjson /tmp/rust.ndjson
-
-# Inspect a specific entry
-python3 compare-ndjson.py /tmp/original.ndjson /tmp/rust.ndjson --inspect 400123
-
-# Compare ordering patterns
-python3 compare-ndjson.py /tmp/original.ndjson /tmp/rust.ndjson --order
-```
-
-For matrikkel/stedsnavn/osm, coordinate diffs at the 6th decimal are expected (different projection libraries).
 
 ## Downstream pipeline context
 
