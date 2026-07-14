@@ -1,6 +1,7 @@
 use base64::prelude::{BASE64_STANDARD, Engine};
 use crate::common::input::{
     CacheOptions, DownloadStream, ResolvedInput, USER_AGENT, fetch_and_resolve, is_cached,
+    parse_last_modified,
 };
 
 const BASE_URL: &str = "https://dl1.lantmateriet.se/adress/belagenhetsadresser";
@@ -69,11 +70,13 @@ fn fetch_with_basic_auth(url: &str) -> Result<DownloadStream, Box<dyn std::error
         .get("content-length")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<u64>().ok());
+    let last_modified = parse_last_modified(response.headers());
 
     Ok(DownloadStream::new(
         Box::new(response.into_body().into_reader()),
         content_length,
-    ))
+    )
+    .with_last_modified(last_modified))
 }
 
 fn load_credentials() -> Result<(String, String), Box<dyn std::error::Error>> {

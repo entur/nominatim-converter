@@ -10,12 +10,12 @@ mod source;
 mod target;
 
 use clap::{Parser, Subcommand};
-use common::input::{CACHE_DIR_ENV, CacheOptions, ResolvedInput, is_cached, resolve_input};
+use common::input::{CACHE_DIR_ENV, CacheOptions, ResolvedInput, is_cached, resolve_input, warn_if_stale};
 use common::norwegian_counties;
 use common::usage::UsageBoost;
 use config::SourceInput;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[derive(Parser)]
 #[command(name = "nominatim-converter", about = "Convert geographic data to Nominatim NDJSON")]
@@ -31,6 +31,18 @@ struct Cli {
     /// Local `id;name;usage` CSV that boosts popular entities.
     #[arg(short = 'u', long = "usage", value_name = "FILE", global = true)]
     usage_csv: Option<PathBuf>,
+
+    /// Warn (advisory) when a resolved source is older than HOURS: URL
+    /// `Last-Modified`, or local file mtime. Bare flag = 24; `=N` overrides.
+    #[arg(
+        long,
+        value_name = "HOURS",
+        global = true,
+        require_equals = true,
+        num_args = 0..=1,
+        default_missing_value = "24"
+    )]
+    warn_if_stale: Option<f64>,
 
     #[command(subcommand)]
     action: Action,
@@ -118,6 +130,14 @@ struct MatrikkelArgs {
     no_county: bool,
 }
 
+/// The global CLI flags, bundled so they thread through as one `Copy` arg.
+#[derive(Clone, Copy)]
+struct RunOptions<'a> {
+    cache: &'a CacheOptions,
+    usage_csv: Option<&'a Path>,
+    stale_after: Option<Duration>,
+}
+
 fn main() {
     // Suppress "Cannot find proj.db" warnings from bundled PROJ.
     // We use a pipeline string that doesn't need the database.
@@ -132,18 +152,21 @@ fn main() {
     // Load .env file for credentials (Lantmäteriet etc.) -- once, before any subcommand runs.
     dotenvy::dotenv().ok();
 
-    let Cli { cache_dir, refresh_cache, usage_csv, action } = Cli::parse();
+    let Cli { cache_dir, refresh_cache, usage_csv, warn_if_stale, action } = Cli::parse();
     let cache = CacheOptions::new(cache_dir.as_deref(), refresh_cache);
     let usage_csv = usage_csv.as_deref();
+    // Bad values (negative, NaN, inf, overflow) disable the check rather than panic.
+    let stale_after = warn_if_stale.and_then(|hours| Duration::try_from_secs_f64(hours * 3600.0).ok());
+    let opts = RunOptions { cache: &cache, usage_csv, stale_after };
 
     let result = match action {
-        Action::Build(args) => run_build(args, &cache, usage_csv),
-        Action::Stopplace(args) => run_conversion("StopPlace", args, Some("*.xml"), &cache, usage_csv, |cfg| cfg.stop_place.as_ref().and_then(|s| s.min_lines), source::stopplace::convert),
-        Action::Matrikkel(args) => run_matrikkel(args, &cache, usage_csv),
-        Action::Osm(args) => run_conversion("OSM PBF", args, None, &cache, usage_csv, |cfg| cfg.osm.as_ref().and_then(|s| s.min_lines), source::osm::convert),
-        Action::Stedsnavn(args) => run_conversion("Stedsnavn", args, Some("*.gml"), &cache, usage_csv, |cfg| cfg.stedsnavn.as_ref().and_then(|s| s.min_lines), source::stedsnavn::convert),
-        Action::Poi(args) => run_conversion("POI", args, None, &cache, usage_csv, |cfg| cfg.poi.as_ref().and_then(|s| s.min_lines), source::poi::convert),
-        Action::Belagenhet(args) => run_conversion("Belägenhetsadress", args, Some("*.gpkg"), &cache, usage_csv, |cfg| cfg.belagenhet.as_ref().and_then(|s| s.min_lines), source::belagenhet::convert),
+        Action::Build(args) => run_build(args, opts),
+        Action::Stopplace(args) => run_conversion("StopPlace", args, Some("*.xml"), opts, |cfg| cfg.stop_place.as_ref().and_then(|s| s.min_lines), source::stopplace::convert),
+        Action::Matrikkel(args) => run_matrikkel(args, opts),
+        Action::Osm(args) => run_conversion("OSM PBF", args, None, opts, |cfg| cfg.osm.as_ref().and_then(|s| s.min_lines), source::osm::convert),
+        Action::Stedsnavn(args) => run_conversion("Stedsnavn", args, Some("*.gml"), opts, |cfg| cfg.stedsnavn.as_ref().and_then(|s| s.min_lines), source::stedsnavn::convert),
+        Action::Poi(args) => run_conversion("POI", args, None, opts, |cfg| cfg.poi.as_ref().and_then(|s| s.min_lines), source::poi::convert),
+        Action::Belagenhet(args) => run_conversion("Belägenhetsadress", args, Some("*.gpkg"), opts, |cfg| cfg.belagenhet.as_ref().and_then(|s| s.min_lines), source::belagenhet::convert),
         Action::Regions => {
             norwegian_counties::list_regions();
             return;
@@ -226,8 +249,7 @@ fn run_conversion<F>(
     name: &str,
     args: ConvertArgs,
     extract_glob: Option<&str>,
-    cache: &CacheOptions,
-    usage_csv: Option<&Path>,
+    opts: RunOptions,
     config_min: fn(&config::Config) -> Option<usize>,
     convert_fn: F,
 ) -> Result<(), Box<dyn std::error::Error>>
@@ -236,14 +258,15 @@ where
 {
     let cfg = config::Config::load(args.config.as_deref())?;
     let (alpha, floor) = usage_tuning(&cfg);
-    let usage = UsageBoost::load(usage_csv, alpha, floor)?;
+    let usage = UsageBoost::load(opts.usage_csv, alpha, floor)?;
     // CLI flag overrides the per-source config value; either may be absent (no check).
     let min_lines = args.min_lines.or_else(|| config_min(&cfg));
 
     let output = &args.output;
     prepare_output(output, args.force, args.append)?;
 
-    let input = resolve_input(&args.input, extract_glob, cache)?;
+    let input = resolve_input(&args.input, extract_glob, opts.cache)?;
+    warn_if_stale(name, &input, opts.stale_after);
 
     eprintln!("Starting {name} conversion...");
     let start = Instant::now();
@@ -264,15 +287,14 @@ where
 /// `run_conversion` plumbing.
 fn run_matrikkel(
     args: MatrikkelArgs,
-    cache: &CacheOptions,
-    usage_csv: Option<&Path>,
+    opts: RunOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let gml_resolved = if args.no_county {
         None
     } else {
         match args.stedsnavn_gml.as_ref() {
             Some(gml) => Some(
-                resolve_input(gml, Some("*.gml"), cache)
+                resolve_input(gml, Some("*.gml"), opts.cache)
                     .map_err(|e| format!("resolving GML input: {e}"))?,
             ),
             None => {
@@ -280,8 +302,11 @@ fn run_matrikkel(
             }
         }
     };
+    if let Some(gml) = gml_resolved.as_ref() {
+        warn_if_stale("Matrikkel county GML", gml, opts.stale_after);
+    }
     let gml_path = gml_resolved.as_ref().map(ResolvedInput::path);
-    run_conversion("Matrikkel", args.convert, Some("*.csv"), cache, usage_csv, |cfg| cfg.matrikkel.as_ref().and_then(|s| s.min_lines), |cfg, input, output, append, usage| {
+    run_conversion("Matrikkel", args.convert, Some("*.csv"), opts, |cfg| cfg.matrikkel.as_ref().and_then(|s| s.min_lines), |cfg, input, output, append, usage| {
         source::matrikkel::convert(cfg, input, output, append, gml_path, usage)
     })
     // gml_resolved drops here; if temp, its file is cleaned up automatically.
@@ -294,7 +319,7 @@ fn run_belagenhet_download(
     cfg: &config::Config,
     output: &Path,
     municipalities: &[String],
-    cache: &CacheOptions,
+    opts: RunOptions,
     usage: &UsageBoost,
     min_lines: Option<usize>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -304,7 +329,8 @@ fn run_belagenhet_download(
     for (i, kommun_id) in municipalities.iter().enumerate() {
         eprintln!("Processing municipality {kommun_id} ({}/{})...", i + 1, municipalities.len());
 
-        let gpkg = source::belagenhet::download::download_municipality(kommun_id, cache)?;
+        let gpkg = source::belagenhet::download::download_municipality(kommun_id, opts.cache)?;
+        warn_if_stale(&format!("Belägenhetsadress {kommun_id}"), &gpkg, opts.stale_after);
         total_written += source::belagenhet::convert(cfg, gpkg.path(), output, true, usage)?;
         // `gpkg` drops here; temp files cleaned up, cached files preserved.
     }
@@ -323,7 +349,7 @@ fn run_belagenhet_download(
 
 /// Config-driven import. Convert every source whose `input` is set, in a fixed order
 /// (matrikkel, stedsnavn, poi, stopplace, osm, belagenhet), appending into one NDJSON.
-fn run_build(args: BuildArgs, cache: &CacheOptions, usage_csv: Option<&Path>) -> Result<(), Box<dyn std::error::Error>> {
+fn run_build(args: BuildArgs, opts: RunOptions) -> Result<(), Box<dyn std::error::Error>> {
     let cfg = config::Config::load(Some(&args.config))?;
     let output = &args.output;
 
@@ -342,11 +368,11 @@ fn run_build(args: BuildArgs, cache: &CacheOptions, usage_csv: Option<&Path>) ->
     prepare_output(output, args.force, args.append)?;
 
     // Usage CSV: an explicit --usage path wins; otherwise resolve the config's usage.input.
-    let usage_resolved = match (usage_csv, cfg.usage.as_ref()) {
-        (None, Some(u)) => Some(resolve_source(&u.input, "usage", None, cache)?),
+    let usage_resolved = match (opts.usage_csv, cfg.usage.as_ref()) {
+        (None, Some(u)) => Some(resolve_source(&u.input, "usage", None, opts)?),
         _ => None,
     };
-    let usage_path = usage_csv.or_else(|| usage_resolved.as_ref().map(ResolvedInput::path));
+    let usage_path = opts.usage_csv.or_else(|| usage_resolved.as_ref().map(ResolvedInput::path));
     let (alpha, floor) = usage_tuning(&cfg);
     let usage = UsageBoost::load(usage_path, alpha, floor)?;
 
@@ -355,13 +381,13 @@ fn run_build(args: BuildArgs, cache: &CacheOptions, usage_csv: Option<&Path>) ->
     // Stedsnavn is resolved once and reused both as matrikkel's county GML and as its
     // own import, so a region/URL is only downloaded a single time.
     let stedsnavn_resolved = match cfg.stedsnavn.as_ref() {
-        Some(s) => Some(resolve_source(&s.input, "stedsnavn", Some("*.gml"), cache)?),
+        Some(s) => Some(resolve_source(&s.input, "stedsnavn", Some("*.gml"), opts)?),
         None => None,
     };
     let stedsnavn_path = stedsnavn_resolved.as_ref().map(ResolvedInput::path);
 
     if let Some(matrikkel) = cfg.matrikkel.as_ref() {
-        let input = resolve_source(&matrikkel.input, "matrikkel", Some("*.csv"), cache)?;
+        let input = resolve_source(&matrikkel.input, "matrikkel", Some("*.csv"), opts)?;
         run_one_source("Matrikkel", input.path(), output, &cfg, matrikkel.min_lines, &usage, |c, i, o, a, u| {
             source::matrikkel::convert(c, i, o, a, stedsnavn_path, u)
         })?;
@@ -370,29 +396,29 @@ fn run_build(args: BuildArgs, cache: &CacheOptions, usage_csv: Option<&Path>) ->
         run_one_source("Stedsnavn", path, output, &cfg, stedsnavn.min_lines, &usage, source::stedsnavn::convert)?;
     }
     if let Some(poi) = cfg.poi.as_ref() {
-        let input = resolve_source(&poi.input, "poi", None, cache)?;
+        let input = resolve_source(&poi.input, "poi", None, opts)?;
         run_one_source("POI", input.path(), output, &cfg, poi.min_lines, &usage, source::poi::convert)?;
     }
     if let Some(stop_place) = cfg.stop_place.as_ref() {
-        let input = resolve_source(&stop_place.input, "stopplace", Some("*.xml"), cache)?;
+        let input = resolve_source(&stop_place.input, "stopplace", Some("*.xml"), opts)?;
         run_one_source("StopPlace", input.path(), output, &cfg, stop_place.min_lines, &usage, source::stopplace::convert)?;
     }
     if let Some(osm) = cfg.osm.as_ref() {
-        let input = resolve_source(&osm.input, "osm", None, cache)?;
+        let input = resolve_source(&osm.input, "osm", None, opts)?;
         run_one_source("OSM PBF", input.path(), output, &cfg, osm.min_lines, &usage, source::osm::convert)?;
     }
     if let Some(belagenhet) = cfg.belagenhet.as_ref() {
         match &belagenhet.input {
             SourceInput::Municipality(spec) => {
                 let codes = resolve_municipality_codes(spec);
-                if needs_belagenhet_credentials(cache, &codes) {
+                if needs_belagenhet_credentials(opts.cache, &codes) {
                     preflight_check_credentials("LANTMATERIET_USER");
                     preflight_check_credentials("LANTMATERIET_PASS");
                 }
-                run_belagenhet_download(&cfg, output, &codes, cache, &usage, belagenhet.min_lines)?;
+                run_belagenhet_download(&cfg, output, &codes, opts, &usage, belagenhet.min_lines)?;
             }
             other => {
-                let input = resolve_source(other, "belagenhet", Some("*.gpkg"), cache)?;
+                let input = resolve_source(other, "belagenhet", Some("*.gpkg"), opts)?;
                 run_one_source("Belägenhetsadress", input.path(), output, &cfg, belagenhet.min_lines, &usage, source::belagenhet::convert)?;
             }
         }
@@ -442,9 +468,10 @@ fn resolve_source(
     src: &SourceInput,
     section: &str,
     extract_glob: Option<&str>,
-    cache: &CacheOptions,
+    opts: RunOptions,
 ) -> Result<ResolvedInput, Box<dyn std::error::Error>> {
-    match src {
+    let cache = opts.cache;
+    let resolved = match src {
         SourceInput::Url(u) => resolve_input(Path::new(u), extract_glob, cache),
         SourceInput::File(p) => {
             // Fail fast with a section-tagged error rather than deep inside the converter.
@@ -463,8 +490,24 @@ fn resolve_source(
             resolve_input(Path::new(&url), extract_glob, cache)
         }
         SourceInput::Municipality(_) => {
-            Err(format!("{section}: `municipality` input is only valid for belagenhet").into())
+            return Err(format!("{section}: `municipality` input is only valid for belagenhet").into());
         }
+    }?;
+    warn_if_stale(source_label(section), &resolved, opts.stale_after);
+    Ok(resolved)
+}
+
+/// Display label for a config section, matching the single-source subcommand names.
+fn source_label(section: &str) -> &str {
+    match section {
+        "matrikkel" => "Matrikkel",
+        "stedsnavn" => "Stedsnavn",
+        "poi" => "POI",
+        "stopplace" => "StopPlace",
+        "osm" => "OSM PBF",
+        "belagenhet" => "Belägenhetsadress",
+        "usage" => "Usage",
+        _ => section,
     }
 }
 

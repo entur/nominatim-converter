@@ -1,7 +1,9 @@
 use crate::common::util::fnv1a_64;
+use chrono::{DateTime, NaiveDateTime, Utc};
 use std::fs::File;
 use std::io::{self, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 /// Name of the environment variable consulted by the CLI when `-d/--cache-dir`
 /// isn't provided. Exposed so `main.rs` and the clap `env = …` attribute
@@ -55,6 +57,9 @@ impl CacheOptions {
 pub struct ResolvedInput {
     path: PathBuf,
     is_temp: bool,
+    /// mtime of the *source* (local file, or downloaded/cached raw file), not of
+    /// `path` (a ZIP's extract is "now"). `None` if undetermined.
+    last_modified: Option<SystemTime>,
 }
 
 impl ResolvedInput {
@@ -62,12 +67,21 @@ impl ResolvedInput {
         &self.path
     }
 
+    pub fn last_modified(&self) -> Option<SystemTime> {
+        self.last_modified
+    }
+
     fn temp(path: PathBuf) -> Self {
-        Self { path, is_temp: true }
+        Self { path, is_temp: true, last_modified: None }
     }
 
     fn persistent(path: PathBuf) -> Self {
-        Self { path, is_temp: false }
+        Self { path, is_temp: false, last_modified: None }
+    }
+
+    fn with_last_modified(mut self, last_modified: Option<SystemTime>) -> Self {
+        self.last_modified = last_modified;
+        self
     }
 }
 
@@ -90,11 +104,19 @@ impl Drop for ResolvedInput {
 pub struct DownloadStream {
     pub reader: Box<dyn Read>,
     pub content_length: Option<u64>,
+    /// Server's `Last-Modified`, if sent and valid. Stamped onto the saved file
+    /// on download so warm-cache hits still report the upstream date.
+    pub last_modified: Option<SystemTime>,
 }
 
 impl DownloadStream {
     pub fn new(reader: Box<dyn Read>, content_length: Option<u64>) -> Self {
-        Self { reader, content_length }
+        Self { reader, content_length, last_modified: None }
+    }
+
+    pub fn with_last_modified(mut self, last_modified: Option<SystemTime>) -> Self {
+        self.last_modified = last_modified;
+        self
     }
 }
 
@@ -140,10 +162,13 @@ pub fn resolve_input(
     // Non-ZIP files are used in place. Local extraction isn't cached: there's nothing to
     // re-download, extraction is cheap, and a path-keyed cache would risk serving a stale extract
     // after the file changes.
+    // Source date = input mtime (for a ZIP, the archive, not the extract).
+    let last_modified = file_mtime(input);
     if is_zip_path(input) {
-        return Ok(ResolvedInput::temp(extract_from_zip(input, extract_glob)?));
+        return Ok(ResolvedInput::temp(extract_from_zip(input, extract_glob)?)
+            .with_last_modified(last_modified));
     }
-    Ok(ResolvedInput::persistent(input.to_path_buf()))
+    Ok(ResolvedInput::persistent(input.to_path_buf()).with_last_modified(last_modified))
 }
 
 /// Whether `path` names a ZIP archive, by extension (case-insensitive). Mirrors the
@@ -186,7 +211,9 @@ where
         && p.exists()
     {
         eprintln!("Using cached extract: {}", p.display());
-        return Ok(ResolvedInput::persistent(p.clone()));
+        // Prefer the raw download's mtime (the upstream date); fall back to the extract.
+        let last_modified = raw_cache.as_deref().and_then(file_mtime).or_else(|| file_mtime(p));
+        return Ok(ResolvedInput::persistent(p.clone()).with_last_modified(last_modified));
     }
 
     // Cache hit on the raw download: re-extract if it's a zip.
@@ -195,12 +222,13 @@ where
         && p.exists()
     {
         eprintln!("Using cached download: {}", p.display());
+        let last_modified = file_mtime(p);
         if parsed.is_zip {
             let dst = extracted_cache.as_ref().expect("extracted_cache set when is_zip");
             extract_from_zip_to(p, extract_glob, dst)?;
-            return Ok(ResolvedInput::persistent(dst.clone()));
+            return Ok(ResolvedInput::persistent(dst.clone()).with_last_modified(last_modified));
         }
-        return Ok(ResolvedInput::persistent(p.clone()));
+        return Ok(ResolvedInput::persistent(p.clone()).with_last_modified(last_modified));
     }
 
     // Miss (or --refresh-cache): download.
@@ -224,11 +252,14 @@ where
 
     download_with_retry(url, &raw_path, fetch)?;
 
+    // Capture now: stamped with `Last-Modified` by the download, and a temp ZIP is deleted below.
+    let last_modified = file_mtime(&raw_path);
+
     if !parsed.is_zip {
         return Ok(if raw_is_temp {
-            ResolvedInput::temp(raw_path)
+            ResolvedInput::temp(raw_path).with_last_modified(last_modified)
         } else {
-            ResolvedInput::persistent(raw_path)
+            ResolvedInput::persistent(raw_path).with_last_modified(last_modified)
         });
     }
 
@@ -239,7 +270,8 @@ where
             ResolvedInput::persistent(dst.clone())
         }
         None => ResolvedInput::temp(extract_from_zip(&raw_path, extract_glob)?),
-    };
+    }
+    .with_last_modified(last_modified);
     if raw_is_temp {
         std::fs::remove_file(&raw_path).ok();
     }
@@ -269,8 +301,15 @@ fn download_with_retry(
     let mut attempt = 1;
     loop {
         eprintln!("Downloading {url}...");
-        let result = fetch(url)
-            .and_then(|stream| download_to_file(stream.reader, path, stream.content_length));
+        let result = fetch(url).and_then(|stream| {
+            let last_modified = stream.last_modified;
+            download_to_file(stream.reader, path, stream.content_length)?;
+            // Stamp with the upstream date (curl -R style) so warm-cache runs report true age.
+            if let Some(lm) = last_modified {
+                set_file_mtime(path, lm);
+            }
+            Ok(())
+        });
         let Err(err) = result else { return Ok(()) };
         std::fs::remove_file(path).ok();
         if attempt >= DOWNLOAD_ATTEMPTS || !is_retryable(err.as_ref()) {
@@ -316,10 +355,74 @@ fn default_fetch(url: &str) -> Result<DownloadStream, Box<dyn std::error::Error>
         .get("content-length")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<u64>().ok());
+    let last_modified = parse_last_modified(response.headers());
     Ok(DownloadStream::new(
         Box::new(response.into_body().into_reader()),
         content_length,
-    ))
+    )
+    .with_last_modified(last_modified))
+}
+
+/// `Last-Modified` from a response, if present and parseable.
+pub(crate) fn parse_last_modified(headers: &ureq::http::HeaderMap) -> Option<SystemTime> {
+    headers
+        .get("last-modified")
+        .and_then(|v| v.to_str().ok())
+        .and_then(parse_http_date)
+}
+
+/// IMF-fixdate only (e.g. `Sun, 06 Nov 1994 08:49:37 GMT`); obsolete forms yield `None`.
+fn parse_http_date(s: &str) -> Option<SystemTime> {
+    let naive = NaiveDateTime::parse_from_str(s.trim(), "%a, %d %b %Y %H:%M:%S GMT").ok()?;
+    Some(naive.and_utc().into())
+}
+
+fn file_mtime(path: &Path) -> Option<SystemTime> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+/// Best-effort; failure just leaves the mtime as-is.
+fn set_file_mtime(path: &Path, mtime: SystemTime) {
+    if let Ok(file) = File::options().write(true).open(path) {
+        file.set_modified(mtime).ok();
+    }
+}
+
+/// Age past `max_age`, or `None` if within threshold or dated in the future.
+fn staleness(now: SystemTime, mtime: SystemTime, max_age: Duration) -> Option<Duration> {
+    match now.duration_since(mtime) {
+        Ok(age) if age > max_age => Some(age),
+        _ => None,
+    }
+}
+
+fn format_age(age: Duration) -> String {
+    let hours = age.as_secs_f64() / 3600.0;
+    let (n, unit) = if hours >= 48.0 { (hours / 24.0, "days") } else { (hours, "hours") };
+    let n = format!("{n:.1}");
+    // Drop a trailing ".0" so a whole threshold reads "24 hours", not "24.0 hours".
+    format!("{} {unit}", n.trim_end_matches(".0"))
+}
+
+/// Advisory stderr warning when `resolved`'s source exceeds `max_age` (no-op when `None`).
+/// Never fails the run.
+pub fn warn_if_stale(label: &str, resolved: &ResolvedInput, max_age: Option<Duration>) {
+    let Some(max_age) = max_age else { return };
+    match resolved.last_modified() {
+        Some(mtime) => {
+            if let Some(age) = staleness(SystemTime::now(), mtime, max_age) {
+                let when = DateTime::<Utc>::from(mtime).format("%Y-%m-%d %H:%M UTC");
+                eprintln!(
+                    "WARNING: {label} source last modified {when} ({} ago), older than the {} staleness threshold.",
+                    format_age(age),
+                    format_age(max_age),
+                );
+            }
+        }
+        None => {
+            eprintln!("Note: {label} source has no known last-modified date; skipping staleness check.");
+        }
+    }
 }
 
 /// Parsed view of an input URL. `normalized` is used for cache-key hashing --
@@ -1030,4 +1133,144 @@ mod tests {
         assert!(!path.exists(), "partial download must not be left behind");
     }
 
+    fn secs_since_epoch(t: SystemTime) -> u64 {
+        t.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs()
+    }
+
+    #[test]
+    fn test_parse_http_date_imf_fixdate() {
+        let t = parse_http_date("Sun, 06 Nov 1994 08:49:37 GMT").expect("should parse");
+        assert_eq!(secs_since_epoch(t), 784_111_777);
+    }
+
+    #[test]
+    fn test_parse_http_date_trims_and_rejects_unparseable() {
+        assert_eq!(secs_since_epoch(parse_http_date("  Sun, 06 Nov 1994 08:49:37 GMT ").unwrap()), 784_111_777);
+        assert!(parse_http_date("not a date").is_none());
+        // obsolete RFC 850 / asctime forms unsupported
+        assert!(parse_http_date("Sunday, 06-Nov-94 08:49:37 GMT").is_none());
+        assert!(parse_http_date("Sun Nov  6 08:49:37 1994").is_none());
+    }
+
+    #[test]
+    fn test_staleness_threshold_and_skew() {
+        let base = SystemTime::UNIX_EPOCH;
+        let now = base + Duration::from_secs(1000);
+        let max = Duration::from_secs(500);
+        assert_eq!(staleness(now, base + Duration::from_secs(100), max), Some(Duration::from_secs(900)));
+        assert_eq!(staleness(now, base + Duration::from_secs(600), max), None);
+        // exactly at threshold: not stale
+        assert_eq!(staleness(now, base + Duration::from_secs(500), max), None);
+        // future mtime (clock skew): no warn
+        assert_eq!(staleness(now, base + Duration::from_secs(2000), max), None);
+    }
+
+    #[test]
+    fn test_format_age_hours_then_days() {
+        assert_eq!(format_age(Duration::from_secs(3600)), "1 hours");
+        assert_eq!(format_age(Duration::from_secs(47 * 3600)), "47 hours");
+        assert_eq!(format_age(Duration::from_secs(48 * 3600)), "2 days");
+        assert_eq!(format_age(Duration::from_secs(90 * 3600)), "3.8 days");
+    }
+
+    #[test]
+    fn test_download_stamps_mtime_from_last_modified() {
+        let path = make_temp_path("txt");
+        let stamp = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+        download_with_retry("https://example.com/x", &path, |_| {
+            Ok(DownloadStream::new(Box::new(io::Cursor::new(b"data".to_vec())), Some(4))
+                .with_last_modified(Some(stamp)))
+        })
+        .unwrap();
+        // whole seconds: some filesystems drop sub-second precision
+        assert_eq!(secs_since_epoch(file_mtime(&path).expect("mtime")), 1_000_000_000);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_download_without_last_modified_leaves_recent_mtime() {
+        let path = make_temp_path("txt");
+        download_with_retry("https://example.com/x", &path, |_| {
+            Ok(DownloadStream::new(Box::new(io::Cursor::new(b"data".to_vec())), Some(4)))
+        })
+        .unwrap();
+        // no header -> mtime stays at download time, never stale
+        let age = SystemTime::now().duration_since(file_mtime(&path).expect("mtime")).unwrap();
+        assert!(age < Duration::from_secs(600), "fresh download should look recent, got {age:?}");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_fetch_and_resolve_reports_last_modified() {
+        let stamp = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+        let resolved = fetch_and_resolve(
+            "https://example.com/data.txt",
+            None,
+            &CacheOptions::default(),
+            |_| {
+                Ok(DownloadStream::new(Box::new(io::Cursor::new(b"hi".to_vec())), Some(2))
+                    .with_last_modified(Some(stamp)))
+            },
+        )
+        .unwrap();
+        assert_eq!(secs_since_epoch(resolved.last_modified().expect("last_modified")), 1_000_000_000);
+    }
+
+    #[test]
+    fn test_fetch_and_resolve_cache_hit_reports_cached_mtime() {
+        let dir = std::env::temp_dir().join(format!("nc-cachehit-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache = CacheOptions::new(Some(&dir), false);
+        let url = "https://example.com/cachehit.txt";
+        let parsed = parse_url(url);
+        let raw = cache_path_in(&dir, &parsed.normalized, &parsed.basename);
+        File::create(&raw).unwrap();
+        set_file_mtime(&raw, SystemTime::UNIX_EPOCH + Duration::from_secs(700_000_000));
+
+        // Warm cache: must not fetch, and reports the cached file's mtime.
+        let resolved = fetch_and_resolve(url, None, &cache, |_| panic!("must not fetch")).unwrap();
+        assert_eq!(secs_since_epoch(resolved.last_modified().expect("mtime")), 700_000_000);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_fetch_and_resolve_extracted_cache_hit_reports_archive_mtime() {
+        let dir = std::env::temp_dir().join(format!("nc-zipcachehit-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache = CacheOptions::new(Some(&dir), false);
+        let url = "https://example.com/data.zip";
+        let parsed = parse_url(url);
+        let raw = cache_path_in(&dir, &parsed.normalized, &parsed.basename);
+        let extracted = append_suffix(&raw, ".extracted");
+        File::create(&raw).unwrap();
+        File::create(&extracted).unwrap();
+        set_file_mtime(&raw, SystemTime::UNIX_EPOCH + Duration::from_secs(600_000_000));
+
+        // Extracted-cache fast path: reports the archive's mtime, not the extract's.
+        let resolved = fetch_and_resolve(url, Some("*.gml"), &cache, |_| panic!("must not fetch")).unwrap();
+        assert_eq!(resolved.path(), extracted.as_path());
+        assert_eq!(secs_since_epoch(resolved.last_modified().expect("mtime")), 600_000_000);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_resolve_input_local_file_reports_source_mtime() {
+        let path = make_temp_path("txt");
+        File::create(&path).unwrap();
+        let stamp = SystemTime::UNIX_EPOCH + Duration::from_secs(900_000_000);
+        set_file_mtime(&path, stamp);
+        let resolved = resolve_input(&path, None, &CacheOptions::default()).unwrap();
+        assert_eq!(secs_since_epoch(resolved.last_modified().expect("mtime")), 900_000_000);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_resolve_input_local_zip_reports_archive_mtime_not_extract() {
+        let zip = create_test_zip(&[("data.gml", b"<gml/>")]);
+        let stamp = SystemTime::UNIX_EPOCH + Duration::from_secs(800_000_000);
+        set_file_mtime(&zip, stamp);
+        let resolved = resolve_input(&zip, Some("*.gml"), &CacheOptions::default()).unwrap();
+        assert_eq!(secs_since_epoch(resolved.last_modified().expect("mtime")), 800_000_000);
+        std::fs::remove_file(&zip).ok();
+    }
 }

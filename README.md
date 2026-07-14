@@ -99,6 +99,7 @@ nominatim-converter belagenhet -i belagenhetsadresser_kn0180.gpkg -o out.ndjson 
 | `--refresh-cache` | Ignore cache hits and re-download |
 | `-u` | Local `id;name;usage` CSV that boosts popular entities (see below) |
 | `--min-lines <N>` | Abort if fewer than N entries are written (single-source subcommands; sanity check; see below) |
+| `--warn-if-stale[=HOURS]` | Warn when a resolved source is older than HOURS (bare = 24; advisory, see below) |
 
 ### Minimum line count (`--min-lines`)
 
@@ -135,6 +136,29 @@ both places, no check is performed. The example config
 (`converter.example.json`) omits `minLines` on purpose - it doubles as the
 test fixture; see `geocoder/photon/import/config/converter-prod.json` for
 production values.
+
+### Source freshness (`--warn-if-stale`)
+
+An advisory check for silently frozen upstreams: a rolling URL that stopped
+updating, or a local file nobody refreshed. Pass `--warn-if-stale` to warn (on
+stderr) about any resolved source older than 24 hours, or `--warn-if-stale=N`
+to set the threshold in hours. Off unless the flag is given.
+
+The age comes from:
+
+- **URLs**: the server's `Last-Modified` header. It's stamped onto the
+  downloaded file (like `curl -R`), so a warm-cache run still reports the true
+  upstream date rather than when the cache was populated. A server that sends no
+  `Last-Modified` falls back to the download time (so a freshly fetched file
+  never looks stale).
+- **Local files** (and ZIP archives): the file's modification time. For a ZIP
+  it's the archive's date, not the extracted entry's.
+
+The check is purely a warning - it never changes the exit code or aborts the
+run (unlike `--min-lines`). A source whose date can't be determined is reported
+and skipped. Works with `build` (every configured source) and the single-source
+subcommands. For a `municipality` belagenhet run, each municipality's archive is
+checked as it downloads.
 
 ### Caching downloads
 
