@@ -263,7 +263,12 @@ impl OsmConverter {
             .collect();
 
         let enrichment_enabled = popularity_calculator.any_entrance_filter();
-        let (node_data, way_data, rel_data, entrance_data) = pass4::collect_pass4_data(
+        let pass4::Pass4Data {
+            nodes: node_data,
+            ways: way_data,
+            rels: rel_data,
+            entrances: entrance_data,
+        } = pass4::collect_pass4_data(
             input,
             &all_needed_way_ids,
             popularity_calculator,

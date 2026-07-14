@@ -53,8 +53,6 @@ nominatim-converter --usage popular-stops.csv stopplace -i stops.xml -o stops.nd
 
 (An explicit `--usage` path also overrides the `usage` section's `input` for a `build` run.)
 
-When `--usage` is set, output **deliberately diverges** from the original Java converter for any boosted entity - importance values will differ. Without `--usage`, output remains bit-identical.
-
 GoSP popularity is the product of its member stops' (boosted) popularities, then run through `ImportanceCalculator::calculate_importance`, which clamps the output to `[floor, 1.0]` per the Nominatim 0-1 specification. Since the product saturates to 1.0 for any busy hub, non-secondary GoSP importance is then capped at `GOSP_IMPORTANCE_CAP` (0.92) so a city GoSP doesn't outrank an exact match on one of its own member stops ("Oslo" over "Oslo bussterminal"). Far-focus major cities outrank near-focus same-prefix streets via the geocoder proxy's request-side weight defaults (Photon `location_bias_scale ~ 0.5`), not via importance values above 1.
 
 GoSP IDs listed in `stopPlace.groupOfStopPlaces.secondaryGosps` are demoted in autocomplete via two converter-side levers (no user-visible field is mutated): (1) importance is pinned to `SECONDARY_GOSP_IMPORTANCE` (0.001, hardcoded - must be strictly positive because Photon's `function_score` drops docs whose total collapses to zero), and (2) `rank_address` is set to 0, which maps the doc to Photon's `AddressType.OTHER` so it forfeits the +0.4 weight `SearchQueryBuilder.setupShortQuery` gives non-"other" docs. The list is explicit rather than heuristic-detected because the redundant-aggregator pattern (e.g. NSR:GroupOfStopPlaces:7 "Bergen" coexisting with GoSP:174 "Bergen sentrum") is hard to distinguish from canonical city aggregators that just happen to have a sibling. Today only GoSP:7 is configured.
@@ -97,7 +95,7 @@ The OSM converter (`src/source/osm/`) has several critical patterns for output c
   - `matrikkel/` — Kartverket CSV addresses (parse, convert)
   - `stedsnavn/` — SSR GML place names (gml, convert)
   - `poi/` — NeTEx POI (xml, convert)
-  - `osm/` — OSM PBF 4-pass (passes, pass4, entity, admin, street, popularity, coordinate, geometry, indexing)
+  - `osm/` — OSM PBF 4-pass (passes, pass4, entity, admin, street, popularity, coordinate, geometry, grid, indexing)
 - `src/source.rs` — Module declarations + shared test helpers (`test_config`, `test_data_path`)
 - `src/target/` — Output format (NDJSON schema, ID generation, JSON writer)
 - `src/config.rs` — `converter.json` deserialization

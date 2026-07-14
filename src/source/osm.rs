@@ -11,6 +11,7 @@ mod coordinate;
 mod entity;
 mod entrance;
 mod geometry;
+mod grid;
 mod indexing;
 mod pass4;
 mod passes;

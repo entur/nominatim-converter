@@ -213,7 +213,7 @@ impl<'a> OsmEntityConverter<'a> {
         let ResolvedAdmin { gid: locality_gid, name: locality } =
             resolve_municipality(municipality);
 
-        let street = self.street_index.find_nearest_street(&centroid);
+        let (street, housenumber) = self.resolve_address(all_tags, &centroid);
 
         let address = Address {
             street,
@@ -256,7 +256,7 @@ impl<'a> OsmEntityConverter<'a> {
                 name_en: en_name,
                 alt_name: join_osm_values(&alt_names),
             }),
-            housenumber: None,
+            housenumber,
             address,
             postcode: None,
             country_code: country.map(|c| c.alpha2.clone()),
@@ -269,6 +269,21 @@ impl<'a> OsmEntityConverter<'a> {
             type_: "Place".to_string(),
             content: vec![content],
         }
+    }
+
+    /// Street + housenumber for a feature. The mapper's own `addr:street` +
+    /// `addr:housenumber` win when present; otherwise fall back to the nearest road
+    /// segment name (never paired with a housenumber, since we can't verify it).
+    fn resolve_address(
+        &self,
+        all_tags: &HashMap<&str, &str>,
+        centroid: &Coordinate,
+    ) -> (Option<String>, Option<String>) {
+        if let Some(&street) = all_tags.get("addr:street") {
+            let housenumber = all_tags.get("addr:housenumber").map(|s| s.to_string());
+            return (Some(street.to_string()), housenumber);
+        }
+        (self.street_index.find_nearest_street(centroid), None)
     }
 
     fn determine_rank_address(&self, tags: &BTreeMap<&str, &str>) -> i32 {
@@ -877,6 +892,57 @@ mod tests {
         let place = conv.convert_node(42, 59.9, 10.7, &tags).unwrap();
         let cats = &place.content[0].categories;
         assert!(cats.iter().any(|c| c.starts_with("county_gid.") && c.contains("03")));
+    }
+
+    // -- addr tags --
+
+    #[test]
+    fn convert_node_uses_addr_street_and_housenumber() {
+        let config = test_config_with_osm_filters();
+        let (nodes, ways, mut admin, streets, pop) = empty_converter_parts(&config);
+        let mut conv = make_converter(&config, &nodes, &ways, &mut admin, &streets, &pop);
+
+        let tags = HashMap::from([
+            ("name", "Kaffe Gram"),
+            ("amenity", "hospital"),
+            ("addr:street", "Kristiansands gate"),
+            ("addr:housenumber", "2B"),
+        ]);
+        let place = conv.convert_node(42, 59.9, 10.7, &tags).unwrap();
+        let content = &place.content[0];
+        assert_eq!(content.address.street.as_deref(), Some("Kristiansands gate"));
+        assert_eq!(content.housenumber.as_deref(), Some("2B"));
+    }
+
+    #[test]
+    fn convert_node_drops_housenumber_without_addr_street() {
+        let config = test_config_with_osm_filters();
+        let (nodes, ways, mut admin, streets, pop) = empty_converter_parts(&config);
+        let mut conv = make_converter(&config, &nodes, &ways, &mut admin, &streets, &pop);
+
+        let tags = HashMap::from([
+            ("name", "Test"),
+            ("amenity", "hospital"),
+            ("addr:housenumber", "30"),
+        ]);
+        let place = conv.convert_node(42, 59.9, 10.7, &tags).unwrap();
+        assert!(place.content[0].housenumber.is_none());
+    }
+
+    #[test]
+    fn convert_node_addr_street_without_housenumber() {
+        let config = test_config_with_osm_filters();
+        let (nodes, ways, mut admin, streets, pop) = empty_converter_parts(&config);
+        let mut conv = make_converter(&config, &nodes, &ways, &mut admin, &streets, &pop);
+
+        let tags = HashMap::from([
+            ("name", "Test"),
+            ("amenity", "hospital"),
+            ("addr:street", "Storgata"),
+        ]);
+        let place = conv.convert_node(42, 59.9, 10.7, &tags).unwrap();
+        assert_eq!(place.content[0].address.street.as_deref(), Some("Storgata"));
+        assert!(place.content[0].housenumber.is_none());
     }
 
     // -- extract_country_code --

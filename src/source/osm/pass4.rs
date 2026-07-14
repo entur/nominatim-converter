@@ -9,6 +9,7 @@ use super::coordinate::{Coordinate, CoordinateStore};
 use super::entity::OsmEntityConverter;
 use super::entrance::{self, EntranceData, EntrancePoint, highway_type, is_entrance_candidate};
 use super::geometry::calculate_centroid;
+use super::grid::distance_meters;
 use super::popularity::OsmPopularityCalculator;
 
 /// Minimum feature size (longer bbox side, in metres) for entrance handling to apply. Smaller
@@ -63,13 +64,20 @@ fn borrow_tags(owned: &[(String, String)]) -> HashMap<&str, &str> {
 // Data collection
 // ---------------------------------------------------------------------------
 
+/// Everything the pass-4 scan collects.
+pub(crate) struct Pass4Data {
+    pub(crate) nodes: NodePoiData,
+    pub(crate) ways: WayPassData,
+    pub(crate) rels: RelationPassData,
+    pub(crate) entrances: EntranceData,
+}
+
 pub(crate) fn collect_pass4_data(
     input: &Path,
     all_needed_way_ids: &HashSet<i64>,
     popularity_calculator: &OsmPopularityCalculator,
     enrichment_enabled: bool,
-) -> Result<(NodePoiData, WayPassData, RelationPassData, EntranceData), Box<dyn std::error::Error>>
-{
+) -> Result<Pass4Data, Box<dyn std::error::Error>> {
     let mut node_data = NodePoiData {
         ids: Vec::new(),
         coords: HashMap::new(),
@@ -93,8 +101,6 @@ pub(crate) fn collect_pass4_data(
     let reader = ElementReader::from_path(input)?;
     reader.for_each(|element| {
         match element {
-            // Collect each node's tags once and share them with both collectors -- on a national
-            // PBF this avoids a second HashMap allocation per node when enrichment is enabled.
             Element::Node(node) => {
                 let tags: HashMap<&str, &str> = node.tags().collect();
                 collect_poi_node(node.id(), node.lat(), node.lon(), &tags, popularity_calculator, &mut node_data);
@@ -121,7 +127,12 @@ pub(crate) fn collect_pass4_data(
         }
     })?;
 
-    Ok((node_data, way_data, rel_data, entrance_data))
+    Ok(Pass4Data {
+        nodes: node_data,
+        ways: way_data,
+        rels: rel_data,
+        entrances: entrance_data,
+    })
 }
 
 fn collect_poi_node(
@@ -273,7 +284,7 @@ fn record_tie(stats: &mut CoverageStats, feature: String, sel: &entrance::Select
     let mut spread = 0.0_f64;
     for (i, a) in sel.tied.iter().enumerate() {
         for b in &sel.tied[i + 1..] {
-            spread = spread.max(meters_between(a, b));
+            spread = spread.max(distance_meters(a, b));
         }
     }
     if spread >= TIE_MIN_SPREAD_METERS {
@@ -321,7 +332,7 @@ pub(crate) fn compute_entrance_overrides(
         if let Some(sel) = entrance::select_entrance_for_feature(node_ids, entrance_data) {
             stats.selections += 1;
             if let Some(centroid) = way_centroids.get(way_id) {
-                stats.distances.push(meters_between(&centroid, &sel.point.coord));
+                stats.distances.push(distance_meters(&centroid, &sel.point.coord));
             }
             record_tie(&mut stats, format!("way/{way_id}"), &sel);
             o.way_points.insert(way_id, sel.point);
@@ -345,7 +356,7 @@ pub(crate) fn compute_entrance_overrides(
         if let Some(sel) = entrance::select_entrance_for_feature(&perimeter, entrance_data) {
             stats.selections += 1;
             if let Some(centroid) = relation_centroid(rel_id, rel_data, nodes_coords, way_centroids) {
-                stats.distances.push(meters_between(&centroid, &sel.point.coord));
+                stats.distances.push(distance_meters(&centroid, &sel.point.coord));
             }
             record_tie(&mut stats, format!("relation/{rel_id}"), &sel);
             o.rel_points.insert(rel_id, sel.point);
@@ -418,15 +429,6 @@ fn bbox_size_meters(node_ids: &[i64], nodes_coords: &CoordinateStore) -> Option<
     let height_m = (bbox.max_lat - bbox.min_lat) * 111_000.0;
     let width_m = (bbox.max_lon - bbox.min_lon) * 111_000.0 * mid_lat.to_radians().cos();
     Some(height_m.max(width_m))
-}
-
-/// Approximate distance in metres between two coordinates (equirectangular projection).
-fn meters_between(a: &Coordinate, b: &Coordinate) -> f64 {
-    let lat_scale = 111_000.0;
-    let lon_scale = 111_000.0 * a.lat.to_radians().cos();
-    let dx = (b.lon - a.lon) * lon_scale;
-    let dy = (b.lat - a.lat) * lat_scale;
-    (dx * dx + dy * dy).sqrt()
 }
 
 /// The `p`-quantile of an ascending-sorted slice (nearest-rank), or 0 for an empty slice.
