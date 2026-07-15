@@ -442,16 +442,16 @@ fn process_way(
     admin_way_node_ids: &mut HashMap<i64, Vec<i64>>,
     addressed_ways: &mut Vec<AddressWayData>,
 ) {
-    // Street way?
+    // Street way? A named road we index for nearest-street lookups.
     if let Some(name) = tags.get("name")
-        && let Some(highway) = tags.get("highway")
-            && HIGHWAY_TYPES.contains(highway) {
-                street_ways.push(StreetWayData {
-                    name: name.to_string(),
-                    node_ids: node_ids.to_vec(),
-                });
-                needed_node_ids.extend(node_ids);
-            }
+        && is_street_way(tags)
+    {
+        street_ways.push(StreetWayData {
+            name: name.to_string(),
+            node_ids: node_ids.to_vec(),
+        });
+        needed_node_ids.extend(node_ids);
+    }
 
     // Addressed building? A closed `building` way carrying addr:street. Contained POIs
     // inherit its street + housenumber. Non-building addressed areas (landuse, parking, ...)
@@ -492,6 +492,16 @@ fn is_closed_way(node_ids: &[i64]) -> bool {
     node_ids.len() >= 4 && node_ids.first() == node_ids.last()
 }
 
+/// A way whose name is usable as a street address: an indexed `highway` type at the
+/// addressable surface. A road passing under a structure is never a feature's address -- a
+/// `tunnel` (e.g. the E18 Operatunnelen under Nasjonalmuseet) or a `covered` way (arcades,
+/// avalanche snow-sheds). Bridges are kept: they carry the continuing street name.
+fn is_street_way(tags: &HashMap<&str, &str>) -> bool {
+    tags.get("highway").is_some_and(|h| HIGHWAY_TYPES.contains(h))
+        && !tags.get("tunnel").is_some_and(|&v| v != "no")
+        && !tags.get("covered").is_some_and(|&v| v != "no")
+}
+
 // ---------------------------------------------------------------------------
 // Pass 3 helpers
 // ---------------------------------------------------------------------------
@@ -528,6 +538,20 @@ mod tests {
         assert!(!is_closed_way(&[1, 2, 3])); // open
         assert!(!is_closed_way(&[1, 2, 1])); // fewer than 4
         assert!(!is_closed_way(&[1, 2, 3, 4])); // not closed
+    }
+
+    #[test]
+    fn is_street_way_excludes_tunnels_and_non_highways() {
+        assert!(is_street_way(&HashMap::from([("highway", "residential")])));
+        assert!(is_street_way(&HashMap::from([("highway", "trunk"), ("tunnel", "no")])));
+        // A bridge keeps the street name.
+        assert!(is_street_way(&HashMap::from([("highway", "primary"), ("bridge", "yes")])));
+        // Below the addressable surface: never a street address.
+        assert!(!is_street_way(&HashMap::from([("highway", "trunk"), ("tunnel", "yes")])));
+        assert!(!is_street_way(&HashMap::from([("highway", "residential"), ("covered", "yes")])));
+        // Not an indexed highway type.
+        assert!(!is_street_way(&HashMap::from([("highway", "footway")])));
+        assert!(!is_street_way(&HashMap::from([("amenity", "hospital")])));
     }
 
     #[test]
