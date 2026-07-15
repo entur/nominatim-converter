@@ -71,7 +71,7 @@
   },
   "matrikkel": {
     "input": { "region": "all" },
-    "addressPopularity": 20.0,
+    "addressPopularity": 6.0,
     "streetPopularity": 20.0,
     "rankAddress": 26
   },
