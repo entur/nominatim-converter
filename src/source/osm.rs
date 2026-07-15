@@ -6,6 +6,7 @@
 //! 3. Nodes pass: Fetch node coordinates for all needed nodes
 //! 4. Ways+Relations pass: Build indexes, calculate centroids, and convert POIs
 
+mod address_index;
 mod admin;
 mod coordinate;
 mod entity;

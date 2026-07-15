@@ -61,6 +61,29 @@ pub(crate) fn calculate_centroid(coords: &[Coordinate]) -> Option<Coordinate> {
     Some(Coordinate { lat, lon })
 }
 
+/// Even-odd ray casting: is `coord` inside the closed ring? Rings with fewer than 3 points
+/// are never inside. Operates on raw lat/lon; exact for containment (only the crossing count
+/// matters, not distances).
+pub(crate) fn ray_cast_contains(ring: &[Coordinate], coord: &Coordinate) -> bool {
+    if ring.len() < 3 {
+        return false;
+    }
+    let n = ring.len();
+    let mut inside = false;
+    let mut j = n - 1;
+    for i in 0..n {
+        let ci = &ring[i];
+        let cj = &ring[j];
+        if (ci.lon > coord.lon) != (cj.lon > coord.lon)
+            && coord.lat < (cj.lat - ci.lat) * (coord.lon - ci.lon) / (cj.lon - ci.lon) + ci.lat
+        {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

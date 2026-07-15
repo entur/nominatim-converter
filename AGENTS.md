@@ -80,6 +80,12 @@ The OSM converter (`src/source/osm/`) has several critical patterns for output c
 - **CoordinateStore at 1e5 scale**: The custom hash-based coordinate store uses 1e5 precision (~1.1m). Do not increase — it causes more diffs, not fewer, because it affects all coordinates including polygon centroid averaging.
 - **4-pass PBF processing**: Relations → Ways → Nodes → Convert. This is critical for collecting the dependency graph (relations need way IDs, ways need node IDs).
 
+### OSM address inheritance
+
+A POI without its own `addr:street` inherits an address via `resolve_address` (`entity.rs`), in priority order: (1) own `addr:street` + `addr:housenumber`; (2) the addressed polygon that contains the POI centroid; (3) the nearest standalone address node within 20 m; (4) nearest road-segment name, never with a housenumber. Containment (2) is what makes an inherited housenumber trustworthy, unlike the bare nearest-street match. A POI's own `addr:housenumber` (which alone is dropped by 1) is preferred over an inherited number in 2 and 3.
+
+Two grid indexes back this (`address_index.rs`), both mirroring `StreetIndex`: `AddressPolygonIndex` (closed `building` ways carrying `addr:street`, collected in pass 2, ray-cast containment via `geometry::ray_cast_contains`, smallest bounding box wins, ties by way id) and `AddressNodeIndex` (nodes with `addr:street` + `addr:housenumber`, collected in pass 3, nearest within 20 m via a fixed 3x3 grid scan, ties by node id). Only `building` ways are treated as addressed polygons; non-building addressed areas (landuse, parking, ...) are excluded since one address rarely covers the whole area. Multipolygon-relation buildings are not indexed yet. Retaining these adds node coordinates beyond the usual filtered subset (bounded to addressed buildings + address nodes); expect a few hundred MB extra on a full Norway run.
+
 ### Performance-sensitive code
 
 - `geo::convert_utm33_to_lat_lon` caches the `Proj` instance in `thread_local!` storage. Creating a `Proj` per call is ~1000x slower. The `Proj` type is not `Send+Sync`, so `LazyLock` cannot be used.
@@ -95,7 +101,7 @@ The OSM converter (`src/source/osm/`) has several critical patterns for output c
   - `matrikkel/` — Kartverket CSV addresses (parse, convert)
   - `stedsnavn/` — SSR GML place names (gml, convert)
   - `poi/` — NeTEx POI (xml, convert)
-  - `osm/` — OSM PBF 4-pass (passes, pass4, entity, admin, street, popularity, coordinate, geometry, grid, indexing)
+  - `osm/` — OSM PBF 4-pass (passes, pass4, entity, admin, street, address_index, popularity, coordinate, geometry, grid, indexing)
 - `src/source.rs` — Module declarations + shared test helpers (`test_config`, `test_data_path`)
 - `src/target/` — Output format (NDJSON schema, ID generation, JSON writer)
 - `src/config.rs` — `converter.json` deserialization

@@ -14,6 +14,7 @@ use crate::config::RankAddress;
 use crate::target::nominatim_id::as_place_id;
 use crate::target::nominatim_place::*;
 
+use super::address_index::{AddressNodeIndex, AddressPolygonIndex};
 use super::admin::AdministrativeBoundary;
 use super::admin::AdministrativeBoundaryIndex;
 use super::coordinate::{Coordinate, CoordinateStore};
@@ -43,6 +44,10 @@ pub(crate) struct OsmEntityConverter<'a> {
     pub(crate) way_centroids: &'a CoordinateStore,
     pub(crate) admin_boundary_index: &'a mut AdministrativeBoundaryIndex,
     pub(crate) street_index: &'a StreetIndex,
+    /// Addressed building/area polygons -- a contained POI inherits their address.
+    pub(crate) address_polygon_index: &'a AddressPolygonIndex,
+    /// Standalone address nodes -- a nearby POI inherits their address.
+    pub(crate) address_node_index: &'a AddressNodeIndex,
     pub(crate) popularity_calculator: &'a OsmPopularityCalculator,
     pub(crate) importance_calc: ImportanceCalculator<'a>,
     /// The configured OSM rank_address values, resolved once at construction from `config.osm`.
@@ -91,6 +96,7 @@ impl<'a> OsmEntityConverter<'a> {
             OBJECT_TYPE_NODE,
             ACCURACY_POINT,
             coord,
+            coord,
             None,
             all_tags,
         ))
@@ -105,11 +111,11 @@ impl<'a> OsmEntityConverter<'a> {
         if name.is_empty() {
             return None;
         }
-        let mut coord = self.way_centroids.get(id)?;
-        // Substitute the entrance/gate coordinate for large area features worth enriching.
-        if let Some(ep) = self.way_entrance_points.get(&id) {
-            coord = ep.coord;
-        }
+        let centroid = self.way_centroids.get(id)?;
+        // The display pin moves to the entrance/gate for large area features worth enriching,
+        // but the address is resolved at the interior centroid so a boundary gate can't inherit
+        // a neighbour's address.
+        let display = self.way_entrance_points.get(&id).map_or(centroid, |ep| ep.coord);
         let tags = self.filter_tags(all_tags);
         Some(self.create_place_content(
             id,
@@ -117,7 +123,8 @@ impl<'a> OsmEntityConverter<'a> {
             name,
             OBJECT_TYPE_WAY,
             ACCURACY_POLYGON,
-            coord,
+            display,
+            centroid,
             None,
             all_tags,
         ))
@@ -140,11 +147,10 @@ impl<'a> OsmEntityConverter<'a> {
             return None;
         }
 
-        let mut centroid = calculate_centroid(&member_coords)?;
-        // Substitute the entrance/gate coordinate for large multipolygon area features.
-        if let Some(ep) = self.relation_entrance_points.get(&id) {
-            centroid = ep.coord;
-        }
+        let centroid = calculate_centroid(&member_coords)?;
+        // See convert_way: the display pin may move to the entrance, the address stays at the
+        // interior centroid.
+        let display = self.relation_entrance_points.get(&id).map_or(centroid, |ep| ep.coord);
         let tags = self.filter_tags(all_tags);
 
         let fallback_county = if tags.get("type") == Some(&"boundary")
@@ -161,6 +167,7 @@ impl<'a> OsmEntityConverter<'a> {
             name,
             OBJECT_TYPE_RELATION,
             ACCURACY_POLYGON,
+            display,
             centroid,
             fallback_county.as_deref(),
             all_tags,
@@ -186,6 +193,9 @@ impl<'a> OsmEntityConverter<'a> {
         coords
     }
 
+    /// `centroid` is the display pin (may be an entrance/gate for enriched features);
+    /// `address_coord` is the interior point address inheritance is resolved at (equal to
+    /// `centroid` unless a display pin was substituted).
     #[allow(clippy::too_many_arguments)]
     fn create_place_content(
         &mut self,
@@ -195,6 +205,7 @@ impl<'a> OsmEntityConverter<'a> {
         object_type: &str,
         accuracy: &str,
         centroid: Coordinate,
+        address_coord: Coordinate,
         fallback_county: Option<&str>,
         all_tags: &HashMap<&str, &str>,
     ) -> NominatimPlace {
@@ -213,7 +224,7 @@ impl<'a> OsmEntityConverter<'a> {
         let ResolvedAdmin { gid: locality_gid, name: locality } =
             resolve_municipality(municipality);
 
-        let (street, housenumber) = self.resolve_address(all_tags, &centroid);
+        let (street, housenumber) = self.resolve_address(all_tags, &address_coord);
 
         let address = Address {
             street,
@@ -271,9 +282,15 @@ impl<'a> OsmEntityConverter<'a> {
         }
     }
 
-    /// Street + housenumber for a feature. The mapper's own `addr:street` +
-    /// `addr:housenumber` win when present; otherwise fall back to the nearest road
-    /// segment name (never paired with a housenumber, since we can't verify it).
+    /// Street + housenumber for a feature, in priority order:
+    /// 1. the feature's own `addr:street` (+ own `addr:housenumber`);
+    /// 2. the addressed polygon that contains it -- containment lets us trust an inherited
+    ///    housenumber the way a bare nearest-street match cannot;
+    /// 3. the nearest standalone address node (within 20 m);
+    /// 4. the nearest road segment name, never paired with a housenumber.
+    ///
+    /// For 2 and 3, the feature's own `addr:housenumber` (dropped by 1 when it has no street)
+    /// is preferred over the inherited number, since it is more specific to the feature.
     fn resolve_address(
         &self,
         all_tags: &HashMap<&str, &str>,
@@ -283,6 +300,16 @@ impl<'a> OsmEntityConverter<'a> {
             let housenumber = all_tags.get("addr:housenumber").map(|s| s.to_string());
             return (Some(street.to_string()), housenumber);
         }
+
+        if let Some(inherited) = self
+            .address_polygon_index
+            .find_containing(centroid)
+            .or_else(|| self.address_node_index.find_nearest(centroid))
+        {
+            let own = all_tags.get("addr:housenumber").map(|s| s.to_string());
+            return (Some(inherited.street), own.or(inherited.housenumber));
+        }
+
         (self.street_index.find_nearest_street(centroid), None)
     }
 
@@ -464,6 +491,10 @@ mod tests {
         std::sync::LazyLock::new(UsageBoost::empty);
     static EMPTY_ENTRANCE_POINTS: std::sync::LazyLock<HashMap<i64, EntrancePoint>> =
         std::sync::LazyLock::new(HashMap::new);
+    static EMPTY_ADDR_POLYGONS: std::sync::LazyLock<AddressPolygonIndex> =
+        std::sync::LazyLock::new(AddressPolygonIndex::new);
+    static EMPTY_ADDR_NODES: std::sync::LazyLock<AddressNodeIndex> =
+        std::sync::LazyLock::new(AddressNodeIndex::new);
 
     fn make_converter<'a>(
         config: &'a Config,
@@ -493,6 +524,8 @@ mod tests {
             way_centroids: ways,
             admin_boundary_index: admin_index,
             street_index,
+            address_polygon_index: &EMPTY_ADDR_POLYGONS,
+            address_node_index: &EMPTY_ADDR_NODES,
             popularity_calculator: pop_calc,
             importance_calc: ImportanceCalculator::new(&EMPTY_USAGE),
             rank_address: &config.osm.as_ref().expect("osm config present in tests").rank_address,
@@ -945,6 +978,135 @@ mod tests {
         assert!(place.content[0].housenumber.is_none());
     }
 
+    // -- address inheritance --
+
+    /// An addressed unit square [59.0,59.001] x [10.0,10.001]; query (59.0005, 10.0005) is inside.
+    fn polygon_index_with_square(street: &str, housenumber: Option<&str>) -> AddressPolygonIndex {
+        let mut index = AddressPolygonIndex::new();
+        index.add_polygon(
+            street,
+            housenumber,
+            &[
+                Coordinate { lat: 59.0, lon: 10.0 },
+                Coordinate { lat: 59.0, lon: 10.001 },
+                Coordinate { lat: 59.001, lon: 10.001 },
+                Coordinate { lat: 59.001, lon: 10.0 },
+                Coordinate { lat: 59.0, lon: 10.0 },
+            ],
+            1,
+        );
+        index
+    }
+
+    #[test]
+    fn convert_node_inherits_from_containing_polygon() {
+        let config = test_config_with_osm_filters();
+        let (nodes, ways, mut admin, streets, pop) = empty_converter_parts(&config);
+        let polygons = polygon_index_with_square("Storgata", Some("5"));
+        let mut conv = make_converter(&config, &nodes, &ways, &mut admin, &streets, &pop);
+        conv.address_polygon_index = &polygons;
+
+        let tags = HashMap::from([("name", "Kaffebar"), ("amenity", "hospital")]);
+        let place = conv.convert_node(42, 59.0005, 10.0005, &tags).unwrap();
+        let content = &place.content[0];
+        assert_eq!(content.address.street.as_deref(), Some("Storgata"));
+        assert_eq!(content.housenumber.as_deref(), Some("5"));
+    }
+
+    #[test]
+    fn convert_node_inherits_from_nearby_address_node() {
+        let config = test_config_with_osm_filters();
+        let (nodes, ways, mut admin, streets, pop) = empty_converter_parts(&config);
+        let mut addr_nodes = AddressNodeIndex::new();
+        addr_nodes.add_node(Coordinate { lat: 59.9, lon: 10.7 }, "Storgata", Some("12"), 1);
+        let mut conv = make_converter(&config, &nodes, &ways, &mut admin, &streets, &pop);
+        conv.address_node_index = &addr_nodes;
+
+        // ~11 m from the address node -- within the 20 m radius.
+        let tags = HashMap::from([("name", "Kiosk"), ("amenity", "hospital")]);
+        let place = conv.convert_node(42, 59.9001, 10.7, &tags).unwrap();
+        let content = &place.content[0];
+        assert_eq!(content.address.street.as_deref(), Some("Storgata"));
+        assert_eq!(content.housenumber.as_deref(), Some("12"));
+    }
+
+    #[test]
+    fn convert_node_containing_polygon_beats_nearby_node() {
+        let config = test_config_with_osm_filters();
+        let (nodes, ways, mut admin, streets, pop) = empty_converter_parts(&config);
+        let polygons = polygon_index_with_square("Bygningsgata", Some("7"));
+        let mut addr_nodes = AddressNodeIndex::new();
+        // Address node ~11 m from the query, also inside the same building.
+        addr_nodes.add_node(Coordinate { lat: 59.0006, lon: 10.0005 }, "Nodeveien", Some("99"), 1);
+        let mut conv = make_converter(&config, &nodes, &ways, &mut admin, &streets, &pop);
+        conv.address_polygon_index = &polygons;
+        conv.address_node_index = &addr_nodes;
+
+        let tags = HashMap::from([("name", "Butikk"), ("amenity", "hospital")]);
+        let place = conv.convert_node(42, 59.0005, 10.0005, &tags).unwrap();
+        let content = &place.content[0];
+        // Containment wins over proximity.
+        assert_eq!(content.address.street.as_deref(), Some("Bygningsgata"));
+        assert_eq!(content.housenumber.as_deref(), Some("7"));
+    }
+
+    #[test]
+    fn convert_node_own_housenumber_pairs_with_inherited_street() {
+        let config = test_config_with_osm_filters();
+        let (nodes, ways, mut admin, streets, pop) = empty_converter_parts(&config);
+        let polygons = polygon_index_with_square("Storgata", Some("5"));
+        let mut conv = make_converter(&config, &nodes, &ways, &mut admin, &streets, &pop);
+        conv.address_polygon_index = &polygons;
+
+        // POI inside the building has its own housenumber but no addr:street.
+        let tags = HashMap::from([
+            ("name", "Butikk"),
+            ("amenity", "hospital"),
+            ("addr:housenumber", "5C"),
+        ]);
+        let place = conv.convert_node(42, 59.0005, 10.0005, &tags).unwrap();
+        let content = &place.content[0];
+        assert_eq!(content.address.street.as_deref(), Some("Storgata"));
+        // Own "5C" wins over the building's "5".
+        assert_eq!(content.housenumber.as_deref(), Some("5C"));
+    }
+
+    #[test]
+    fn convert_node_own_housenumber_pairs_with_address_node_street() {
+        let config = test_config_with_osm_filters();
+        let (nodes, ways, mut admin, streets, pop) = empty_converter_parts(&config);
+        let mut addr_nodes = AddressNodeIndex::new();
+        addr_nodes.add_node(Coordinate { lat: 59.9, lon: 10.7 }, "Storgata", Some("12"), 1);
+        let mut conv = make_converter(&config, &nodes, &ways, &mut admin, &streets, &pop);
+        conv.address_node_index = &addr_nodes;
+
+        // POI near the address node carries its own housenumber but no addr:street.
+        let tags = HashMap::from([
+            ("name", "Kiosk"),
+            ("amenity", "hospital"),
+            ("addr:housenumber", "12B"),
+        ]);
+        let place = conv.convert_node(42, 59.9001, 10.7, &tags).unwrap();
+        let content = &place.content[0];
+        assert_eq!(content.address.street.as_deref(), Some("Storgata"));
+        // Own "12B" wins over the node's "12".
+        assert_eq!(content.housenumber.as_deref(), Some("12B"));
+    }
+
+    #[test]
+    fn convert_node_no_source_yields_no_housenumber() {
+        let config = test_config_with_osm_filters();
+        let (nodes, ways, mut admin, streets, pop) = empty_converter_parts(&config);
+        // Empty polygon/node/street indexes: nothing to inherit from.
+        let mut conv = make_converter(&config, &nodes, &ways, &mut admin, &streets, &pop);
+
+        let tags = HashMap::from([("name", "Test"), ("amenity", "hospital")]);
+        let place = conv.convert_node(42, 59.0005, 10.0005, &tags).unwrap();
+        let content = &place.content[0];
+        assert!(content.address.street.is_none());
+        assert!(content.housenumber.is_none());
+    }
+
     // -- extract_country_code --
 
     #[test]
@@ -1007,6 +1169,46 @@ mod tests {
         let b = &place.content[0].bbox;
         assert!((b[0] - 11.5503).abs() < 1e-6);
         assert!((b[1] - 60.8771).abs() < 1e-6);
+    }
+
+    #[test]
+    fn convert_way_resolves_address_at_centroid_not_entrance() {
+        let config = test_config_with_osm_filters();
+        let (nodes, _ways, mut admin, streets, pop) = empty_converter_parts(&config);
+        let mut ways = CoordinateStore::new(16);
+        // True centroid inside "our" building; the gate sits over on the neighbour.
+        ways.put(700, Coordinate { lat: 59.0005, lon: 10.0005 });
+        let gate = Coordinate { lat: 59.2005, lon: 10.2005 };
+        let entrance_points = HashMap::from([(700_i64, EntrancePoint { node_id: 1, coord: gate })]);
+
+        let mut polygons = polygon_index_with_square("Riktig gate", Some("1"));
+        // Neighbour building around the gate.
+        polygons.add_polygon(
+            "Nabogate",
+            Some("99"),
+            &[
+                Coordinate { lat: 59.2, lon: 10.2 },
+                Coordinate { lat: 59.2, lon: 10.201 },
+                Coordinate { lat: 59.201, lon: 10.201 },
+                Coordinate { lat: 59.201, lon: 10.2 },
+                Coordinate { lat: 59.2, lon: 10.2 },
+            ],
+            2,
+        );
+
+        let mut conv = make_converter_with_entrances(
+            &config, &nodes, &ways, &mut admin, &streets, &pop, &entrance_points,
+        );
+        conv.address_polygon_index = &polygons;
+
+        let tags = HashMap::from([("name", "Stor Klinikk"), ("amenity", "hospital")]);
+        let place = conv.convert_way(700, &tags).unwrap();
+        let content = &place.content[0];
+        // Display pin is the gate...
+        assert!((content.centroid[0] - 10.2005).abs() < 1e-6);
+        // ...but the address is the building the centroid sits in, not the neighbour at the gate.
+        assert_eq!(content.address.street.as_deref(), Some("Riktig gate"));
+        assert_eq!(content.housenumber.as_deref(), Some("1"));
     }
 
     #[test]

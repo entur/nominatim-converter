@@ -8,11 +8,13 @@ use crate::config::Config;
 use crate::target::json_writer::JsonWriter;
 use crate::target::nominatim_place::NominatimPlace;
 
+use super::address_index::{AddressNodeIndex, AddressPolygonIndex};
 use super::admin::{ADMIN_LEVEL_COUNTY, ADMIN_LEVEL_MUNICIPALITY, AdministrativeBoundaryIndex};
 use super::coordinate::{Coordinate, CoordinateStore};
 use super::entity::{OsmEntityConverter, extract_country_code};
 use super::indexing::{
-    AdminRelationData, StreetWayData, build_admin_boundary_index, build_street_index,
+    AddressWayData, AdminRelationData, StreetWayData, build_address_polygon_index,
+    build_admin_boundary_index, build_street_index,
 };
 use super::pass4;
 use super::popularity::OsmPopularityCalculator;
@@ -25,12 +27,14 @@ pub(crate) struct Pass1Result {
     pub poi_relation_node_ids: HashSet<i64>,
 }
 
-/// Data collected in pass 2 (ways): streets, POI ways, and the node IDs needed for pass 3.
+/// Data collected in pass 2 (ways): streets, POI ways, addressed polygons, and the node IDs
+/// needed for pass 3.
 pub(crate) struct Pass2Result {
     pub street_ways: Vec<StreetWayData>,
     pub poi_way_ids: HashSet<i64>,
     pub needed_node_ids: HashSet<i64>,
     pub admin_way_node_ids: HashMap<i64, Vec<i64>>,
+    pub addressed_ways: Vec<AddressWayData>,
 }
 
 // ---------------------------------------------------------------------------
@@ -60,6 +64,8 @@ impl OsmConverter {
         let mut way_centroids = CoordinateStore::new(50_000);
         let mut admin_boundary_index = AdministrativeBoundaryIndex::new();
         let mut street_index = StreetIndex::new();
+        let mut address_polygon_index = AddressPolygonIndex::new();
+        let mut address_node_index = AddressNodeIndex::new();
         let popularity_calculator = OsmPopularityCalculator::new(&self.config);
 
         let p1 = self.pass1_relations(input, &popularity_calculator)?;
@@ -72,7 +78,12 @@ impl OsmConverter {
             &popularity_calculator,
         )?;
 
-        Self::pass3_nodes(input, &p2.needed_node_ids, &mut nodes_coords)?;
+        Self::pass3_nodes(
+            input,
+            &p2.needed_node_ids,
+            &mut nodes_coords,
+            &mut address_node_index,
+        )?;
 
         build_admin_boundary_index(
             &p1.admin_relations,
@@ -85,6 +96,10 @@ impl OsmConverter {
         build_street_index(&p2.street_ways, &nodes_coords, &mut street_index);
         eprintln!("  {}", street_index.get_statistics());
 
+        build_address_polygon_index(&p2.addressed_ways, &nodes_coords, &mut address_polygon_index);
+        eprintln!("  {}", address_polygon_index.get_statistics());
+        eprintln!("  {}", address_node_index.get_statistics());
+
         let results = self.pass4_convert(
             input,
             &p2.poi_way_ids,
@@ -93,6 +108,8 @@ impl OsmConverter {
             &mut way_centroids,
             &mut admin_boundary_index,
             &street_index,
+            &address_polygon_index,
+            &address_node_index,
             &popularity_calculator,
             usage,
         )?;
@@ -169,6 +186,7 @@ impl OsmConverter {
         let mut needed_node_ids: HashSet<i64> = poi_relation_node_ids.clone();
         let mut poi_way_ids: HashSet<i64> = HashSet::new();
         let mut admin_way_node_ids: HashMap<i64, Vec<i64>> = HashMap::new();
+        let mut addressed_ways: Vec<AddressWayData> = Vec::new();
 
         let reader = ElementReader::from_path(input)?;
         reader.for_each(|element| {
@@ -187,51 +205,56 @@ impl OsmConverter {
                     &mut needed_node_ids,
                     &mut poi_way_ids,
                     &mut admin_way_node_ids,
+                    &mut addressed_ways,
                 );
             }
         })?;
 
         eprintln!("  Found {} street ways", street_ways.len());
         eprintln!("  Found {} POI ways", poi_way_ids.len());
+        eprintln!("  Found {} addressed polygons", addressed_ways.len());
         eprintln!(
             "  Total unique node coordinates needed: {}",
             needed_node_ids.len()
         );
 
-        Ok(Pass2Result { street_ways, needed_node_ids, poi_way_ids, admin_way_node_ids })
+        Ok(Pass2Result {
+            street_ways,
+            needed_node_ids,
+            poi_way_ids,
+            admin_way_node_ids,
+            addressed_ways,
+        })
     }
 
-    /// Pass 3: Nodes -- collect coordinates for all needed nodes.
+    /// Pass 3: Nodes -- collect coordinates for all needed nodes, and index standalone
+    /// address nodes (any node with `addr:street` + `addr:housenumber`, whether or not it is
+    /// otherwise needed) for address inheritance.
     fn pass3_nodes(
         input: &Path,
         needed_node_ids: &HashSet<i64>,
         nodes_coords: &mut CoordinateStore,
+        address_node_index: &mut AddressNodeIndex,
     ) -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("Pass 3/4: Collecting node coordinates...");
 
         let reader = ElementReader::from_path(input)?;
         reader.for_each(|element| {
             match element {
-                Element::Node(node)
-                    if needed_node_ids.contains(&node.id()) => {
-                        nodes_coords.put(
-                            node.id(),
-                            Coordinate {
-                                lat: node.lat(),
-                                lon: node.lon(),
-                            },
-                        );
+                Element::Node(node) => {
+                    let coord = Coordinate { lat: node.lat(), lon: node.lon() };
+                    if needed_node_ids.contains(&node.id()) {
+                        nodes_coords.put(node.id(), coord);
                     }
-                Element::DenseNode(node)
-                    if needed_node_ids.contains(&node.id) => {
-                        nodes_coords.put(
-                            node.id,
-                            Coordinate {
-                                lat: node.lat(),
-                                lon: node.lon(),
-                            },
-                        );
+                    collect_address_node(node.id(), coord, node.tags(), address_node_index);
+                }
+                Element::DenseNode(node) => {
+                    let coord = Coordinate { lat: node.lat(), lon: node.lon() };
+                    if needed_node_ids.contains(&node.id) {
+                        nodes_coords.put(node.id, coord);
                     }
+                    collect_address_node(node.id, coord, node.tags(), address_node_index);
+                }
                 _ => {}
             }
         })?;
@@ -251,6 +274,8 @@ impl OsmConverter {
         way_centroids: &mut CoordinateStore,
         admin_boundary_index: &mut AdministrativeBoundaryIndex,
         street_index: &StreetIndex,
+        address_polygon_index: &AddressPolygonIndex,
+        address_node_index: &AddressNodeIndex,
         popularity_calculator: &OsmPopularityCalculator,
         usage: &crate::common::usage::UsageBoost,
     ) -> Result<Vec<NominatimPlace>, Box<dyn std::error::Error>> {
@@ -304,6 +329,8 @@ impl OsmConverter {
             way_centroids,
             admin_boundary_index,
             street_index,
+            address_polygon_index,
+            address_node_index,
             popularity_calculator,
             importance_calc,
             rank_address,
@@ -413,6 +440,7 @@ fn process_way(
     needed_node_ids: &mut HashSet<i64>,
     poi_way_ids: &mut HashSet<i64>,
     admin_way_node_ids: &mut HashMap<i64, Vec<i64>>,
+    addressed_ways: &mut Vec<AddressWayData>,
 ) {
     // Street way?
     if let Some(name) = tags.get("name")
@@ -424,6 +452,22 @@ fn process_way(
                 });
                 needed_node_ids.extend(node_ids);
             }
+
+    // Addressed building? A closed `building` way carrying addr:street. Contained POIs
+    // inherit its street + housenumber. Non-building addressed areas (landuse, parking, ...)
+    // are excluded: one address rarely covers the whole area.
+    if let Some(&street) = tags.get("addr:street")
+        && tags.get("building").is_some_and(|&v| v != "no")
+        && is_closed_way(node_ids)
+    {
+        addressed_ways.push(AddressWayData {
+            street: street.to_string(),
+            housenumber: tags.get("addr:housenumber").map(|s| s.to_string()),
+            node_ids: node_ids.to_vec(),
+            way_id: way.id(),
+        });
+        needed_node_ids.extend(node_ids);
+    }
 
     // Admin boundary way?
     if admin_way_ids.contains(&way.id()) {
@@ -440,5 +484,67 @@ fn process_way(
     if popularity_calculator.is_poi(tags) {
         poi_way_ids.insert(way.id());
         needed_node_ids.extend(node_ids);
+    }
+}
+
+/// A closed ring: first node repeated as last, at least a triangle.
+fn is_closed_way(node_ids: &[i64]) -> bool {
+    node_ids.len() >= 4 && node_ids.first() == node_ids.last()
+}
+
+// ---------------------------------------------------------------------------
+// Pass 3 helpers
+// ---------------------------------------------------------------------------
+
+/// Index a node as a standalone address source when it carries both `addr:street` and
+/// `addr:housenumber` (a full address point, e.g. Kartverket-imported addresses).
+fn collect_address_node<'a>(
+    id: i64,
+    coord: Coordinate,
+    tags: impl Iterator<Item = (&'a str, &'a str)>,
+    index: &mut AddressNodeIndex,
+) {
+    let mut street: Option<&str> = None;
+    let mut housenumber: Option<&str> = None;
+    for (k, v) in tags {
+        match k {
+            "addr:street" => street = Some(v),
+            "addr:housenumber" => housenumber = Some(v),
+            _ => {}
+        }
+    }
+    if let (Some(street), Some(housenumber)) = (street, housenumber) {
+        index.add_node(coord, street, Some(housenumber), id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_closed_way_requires_repeated_first_last() {
+        assert!(is_closed_way(&[1, 2, 3, 1]));
+        assert!(!is_closed_way(&[1, 2, 3])); // open
+        assert!(!is_closed_way(&[1, 2, 1])); // fewer than 4
+        assert!(!is_closed_way(&[1, 2, 3, 4])); // not closed
+    }
+
+    #[test]
+    fn collect_address_node_requires_street_and_housenumber() {
+        let coord = Coordinate { lat: 59.9, lon: 10.7 };
+
+        let mut both = AddressNodeIndex::new();
+        collect_address_node(
+            1,
+            coord,
+            [("addr:street", "Storgata"), ("addr:housenumber", "3")].into_iter(),
+            &mut both,
+        );
+        assert!(both.find_nearest(&coord).is_some());
+
+        let mut street_only = AddressNodeIndex::new();
+        collect_address_node(2, coord, [("addr:street", "Storgata")].into_iter(), &mut street_only);
+        assert!(street_only.find_nearest(&coord).is_none());
     }
 }

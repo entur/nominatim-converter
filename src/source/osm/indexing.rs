@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::common::country::Country;
 
+use super::address_index::AddressPolygonIndex;
 use super::admin::{AdministrativeBoundary, AdministrativeBoundaryIndex};
 use super::coordinate::{Coordinate, CoordinateStore};
 use super::geometry::BoundingBox;
@@ -26,6 +27,15 @@ pub(crate) struct AdminRelationData {
 pub(crate) struct StreetWayData {
     pub(crate) name: String,
     pub(crate) node_ids: Vec<i64>,
+}
+
+/// A closed way carrying `addr:street`, collected during pass 2. Used to build the
+/// address-polygon index so contained POIs can inherit the polygon's address.
+pub(crate) struct AddressWayData {
+    pub(crate) street: String,
+    pub(crate) housenumber: Option<String>,
+    pub(crate) node_ids: Vec<i64>,
+    pub(crate) way_id: i64,
 }
 
 // ---------------------------------------------------------------------------
@@ -109,5 +119,23 @@ pub(crate) fn build_street_index(
             "  Warning: Skipped {} streets due to missing node coordinates",
             skipped
         );
+    }
+}
+
+pub(crate) fn build_address_polygon_index(
+    addressed_ways: &[AddressWayData],
+    nodes_coords: &CoordinateStore,
+    index: &mut AddressPolygonIndex,
+) {
+    eprintln!("  Building address polygon index...");
+    for way in addressed_ways {
+        let ring: Vec<Coordinate> = way
+            .node_ids
+            .iter()
+            .filter_map(|&nid| nodes_coords.get(nid))
+            .collect();
+        if ring.len() >= 3 {
+            index.add_polygon(&way.street, way.housenumber.as_deref(), &ring, way.way_id);
+        }
     }
 }

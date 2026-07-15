@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use super::coordinate::Coordinate;
-use super::geometry::BoundingBox;
+use super::geometry::{ray_cast_contains, BoundingBox};
 use crate::common::country::Country;
 
 /// OSM admin_level for counties/regions (e.g. Norwegian fylker, Swedish län).
@@ -31,24 +31,7 @@ pub struct AdministrativeBoundary {
 impl AdministrativeBoundary {
     /// Ray-casting algorithm -- check if point is inside the polygon.
     pub fn contains_point(&self, coord: &Coordinate) -> bool {
-        if self.boundary_nodes.len() < 3 {
-            return false;
-        }
-        let mut inside = false;
-        let n = self.boundary_nodes.len();
-        let mut j = n - 1;
-        for i in 0..n {
-            let ci = &self.boundary_nodes[i];
-            let cj = &self.boundary_nodes[j];
-            if (ci.lon > coord.lon) != (cj.lon > coord.lon)
-                && coord.lat
-                    < (cj.lat - ci.lat) * (coord.lon - ci.lon) / (cj.lon - ci.lon) + ci.lat
-            {
-                inside = !inside;
-            }
-            j = i;
-        }
-        inside
+        ray_cast_contains(&self.boundary_nodes, coord)
     }
 
     /// Euclidean distance from the given point to this boundary's centroid.
