@@ -68,8 +68,9 @@ pub fn convert_all(
     }
 
     // Calculate popularities. The optional usage boost nudges popular stops upward;
-    // GoSPs inherit the signal automatically through the member-product propagation
-    // in `calculate_gosp_popularity` so they don't need a separate lookup.
+    // member boosts reach GoSPs through the member-product propagation, and
+    // `convert_gosp` additionally applies the group's own usage entry, so GoSP
+    // ranking survives single-member churn in the stop place register.
     let stop_popularities: HashMap<String, i64> = result.stop_places.iter().map(|sp| {
         let child_types = stop_place_types.get(&sp.id).cloned().unwrap_or_default();
         let pop = calculate_stop_popularity(stop_place, sp, &child_types, usage.factor(&sp.id));
@@ -475,7 +476,7 @@ pub(crate) fn convert_gosp(
     let raw_importance = if is_secondary {
         SECONDARY_GOSP_IMPORTANCE.max(IMPORTANCE_FLOOR)
     } else {
-        let capped = importance_calc.calculate_importance(gosp_pop).min(GOSP_IMPORTANCE_CAP);
+        let capped = importance_calc.calculate_importance_for(&gosp.id, gosp_pop).min(GOSP_IMPORTANCE_CAP);
         apply_foreign_penalty(capped, &country, stop_place.foreign_importance_factor)
     };
     let importance = RawNumber::from_f64_6dp(raw_importance);
@@ -607,9 +608,9 @@ fn resolve_gosp_geography(
     geo
 }
 
-/// GoSP popularity is the product of its members' popularities. Empty product is 1.0,
-/// which lands on the importance floor for GoSPs whose members couldn't be resolved.
-/// The resulting importance is capped at `GOSP_IMPORTANCE_CAP` by the caller.
+/// GoSP popularity is the product of its members' popularities (empty product: 1.0,
+/// the importance floor for GoSPs whose members couldn't be resolved). The caller
+/// applies the group's own usage boost and the `GOSP_IMPORTANCE_CAP`.
 fn calculate_gosp_popularity(
     gosp: &GroupOfStopPlacesXml,
     stop_popularities: &HashMap<String, i64>,
@@ -1080,6 +1081,39 @@ mod tests {
 
         assert_eq!(result.content[0].importance.0, RawNumber::from_f64_6dp(GOSP_IMPORTANCE_CAP * 0.6).0,
             "foreign GoSP importance must be the cap (0.92) times foreignImportanceFactor (0.6)");
+    }
+
+    #[test]
+    fn gosp_own_usage_entry_boosts_importance() {
+        // The group's own usage entry multiplies the member product, so GoSP ranking
+        // doesn't hinge solely on register membership.
+        let config = test_config();
+        let usage = UsageBoost::from_counts(&[("NSR:GroupOfStopPlaces:174", 10_000)], 0.5, 100);
+        let importance_calc = ImportanceCalculator::new(&usage);
+
+        let a = make_stop_place("NSR:StopPlace:30859", "Byparken", Some("tram"), Some("onstreetTram"));
+        let stop_by_id: HashMap<&str, &StopPlaceXml> = HashMap::from([("NSR:StopPlace:30859", &a)]);
+        let pops = HashMap::from([("NSR:StopPlace:30859".to_string(), 1_000_i64)]);
+
+        let gosp = GroupOfStopPlacesXml {
+            id: "NSR:GroupOfStopPlaces:174".to_string(),
+            name: Some("Bergen sentrum".to_string()),
+            centroid: Some(CentroidXml { location: LocationXml { longitude: 5.33, latitude: 60.39 } }),
+            members: Some(MembersXml {
+                refs: vec![RefAttr { ref_: "NSR:StopPlace:30859".to_string() }],
+            }),
+        };
+
+        let result = convert_gosp(
+            config.stop_place.as_ref().unwrap(), &importance_calc, &gosp, &HashMap::new(),
+            &pops, &stop_by_id, false,
+        ).unwrap();
+
+        // factor(10_000) = 1 + 0.5*log10(10_000/100) = 2.0, so importance of 2_000, not 1_000
+        let expected = importance_calc.calculate_importance(2_000.0);
+        assert!(expected > importance_calc.calculate_importance(1_000.0));
+        assert_eq!(result.content[0].importance.0, RawNumber::from_f64_6dp(expected).0,
+            "GoSP importance must include the group's own usage boost");
     }
 
     #[test]

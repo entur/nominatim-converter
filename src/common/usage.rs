@@ -31,6 +31,12 @@ impl UsageBoost {
         Self { counts: HashMap::new(), alpha: DEFAULT_ALPHA, usage_floor: DEFAULT_USAGE_FLOOR }
     }
 
+    #[cfg(test)]
+    pub(crate) fn from_counts(counts: &[(&str, u64)], alpha: f64, usage_floor: u64) -> Self {
+        let counts = counts.iter().map(|(id, n)| ((*id).to_string(), *n)).collect();
+        Self { counts, alpha, usage_floor }
+    }
+
     pub fn load(path: Option<&Path>, alpha: f64, usage_floor: u64) -> Result<Self, Box<dyn std::error::Error>> {
         let Some(path) = path else {
             return Ok(Self::empty());
@@ -76,11 +82,7 @@ mod tests {
     use super::*;
 
     fn with(counts: &[(&str, u64)]) -> UsageBoost {
-        let mut counts_map = HashMap::new();
-        for (id, n) in counts {
-            counts_map.insert((*id).to_string(), *n);
-        }
-        UsageBoost { counts: counts_map, alpha: DEFAULT_ALPHA, usage_floor: DEFAULT_USAGE_FLOOR }
+        UsageBoost::from_counts(counts, DEFAULT_ALPHA, DEFAULT_USAGE_FLOOR)
     }
 
     #[test]
