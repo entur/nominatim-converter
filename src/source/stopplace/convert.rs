@@ -200,8 +200,7 @@ pub(crate) fn convert_stop_place(
         sp, &role, &inferred_types, &country, &geography, fare_zones,
     );
 
-    let child_stop_names: Vec<String> = child_stops.iter().filter_map(|cs| cs.name.clone()).collect();
-    let alt_names = build_stop_alt_names(sp, sp_name, &child_stop_names);
+    let alt_names = build_stop_alt_names(sp, sp_name, child_stops);
     let visible_alt: Vec<String> = alt_stop_names(sp, sp_name, Some("label"));
 
     let entry = NominatimPlace {
@@ -386,9 +385,16 @@ fn append_tariff_zone_categories(
     }
 }
 
-fn build_stop_alt_names(sp: &StopPlaceXml, sp_name: &str, child_stop_names: &[String]) -> Vec<String> {
+/// Indexed alt names: the stop's own alternative names plus, for a multimodal parent, each
+/// child's name and alternative names. Without the children's aliases a parent misses queries
+/// its children match (e.g. "Nasjonalteatret"), and the proxy's default `multimodal=parent`
+/// then filters away the only hits.
+fn build_stop_alt_names(sp: &StopPlaceXml, sp_name: &str, child_stops: &[&StopPlaceXml]) -> Vec<String> {
     let mut alt_names: Vec<String> = alt_stop_names(sp, sp_name, None);
-    alt_names.extend_from_slice(child_stop_names);
+    for cs in child_stops {
+        alt_names.extend(cs.name.clone());
+        alt_names.extend(alt_stop_names(cs, sp_name, None));
+    }
     dedup_preserve_order(&mut alt_names);
     alt_names
 }
@@ -501,6 +507,8 @@ pub(crate) fn convert_gosp(
     // "Bergen" GoSP below real Bergen stops without modifying any user-visible field.
     let rank_address = if is_secondary { 0 } else { stop_place.group_of_stop_places.rank_address };
 
+    // Only member names, not their alternative names: a group's importance beats any member's,
+    // so an inherited alias makes the group outrank the stop that actually carries it.
     let mut member_names: Vec<String> = gosp.members.as_ref()
         .map(|m| m.refs.iter()
             .filter_map(|r| stop_by_id.get(r.ref_.as_str()).copied())
@@ -641,16 +649,18 @@ pub(crate) fn dedup_preserve_order(v: &mut Vec<String>) {
     v.retain(|s| seen.insert(s.clone()));
 }
 
+/// `exclude_name` is the primary name of the document being built, which may be a parent or
+/// group rather than `sp` itself.
 pub(crate) fn alt_stop_names(
     sp: &StopPlaceXml,
-    primary_name: &str,
+    exclude_name: &str,
     name_type_filter: Option<&str>,
 ) -> Vec<String> {
     let Some(alt_names) = &sp.alternative_names else { return Vec::new() };
     alt_names.names.iter()
         .filter(|an| name_type_filter.is_none() || an.name_type.as_deref() == name_type_filter)
         .filter_map(|an| an.name.as_ref())
-        .filter(|n| n.as_str() != primary_name && !n.is_empty())
+        .filter(|n| n.as_str() != exclude_name && !n.is_empty())
         .cloned()
         .collect()
 }
@@ -792,6 +802,31 @@ mod tests {
         let result = alt_stop_names(&sp, "Oslo S", None);
         assert!(!result.contains(&"Oslo S".to_string()));
         assert!(result.contains(&"Oslo Central".to_string()));
+    }
+
+    #[test]
+    fn parent_alt_name_inherits_child_names_and_aliases() {
+        let config = test_config();
+        let importance_calc = ImportanceCalculator::new(&EMPTY_USAGE);
+        let parent = make_stop_place("NSR:StopPlace:58404", "Nationaltheatret", None, None);
+        let child_rail = make_stop_place_with_alt_names("NSR:StopPlace:288", "Nationaltheatret stasjon", vec![
+            ("Nationaltheatret", Some("alias")),        // equals the parent name: dropped
+            ("Nasjonalteatret", Some("alias")),
+            ("National Theatre", Some("translation")), // all name types are indexed, not just aliases
+        ]);
+        let child_tram = make_stop_place_with_alt_names("NSR:StopPlace:4081", "Nationaltheatret", vec![
+            ("Nasjonalteatret", Some("alias")),
+        ]);
+        let result = convert_stop_place(
+            config.stop_place.as_ref().unwrap(), &importance_calc, &parent, &HashMap::new(),
+            &HashMap::new(), &HashMap::new(), 50, &[&child_rail, &child_tram],
+        ).unwrap();
+        // Trailing "Nationaltheatret" is the tram child's name: child names are only deduped,
+        // not filtered against the parent's name.
+        assert_eq!(
+            result.content[0].name.as_ref().unwrap().alt_name.as_deref(),
+            Some("Nationaltheatret stasjon;Nasjonalteatret;National Theatre;Nationaltheatret"),
+        );
     }
 
     // ===== Category tests =====
@@ -969,6 +1004,38 @@ mod tests {
         assert!(alt_name.contains("Oslo S"), "alt_name should include member 'Oslo S': {alt_name}");
         assert!(alt_name.contains("Oslo Bussterminal"), "alt_name should include member 'Oslo Bussterminal': {alt_name}");
         assert!(!alt_name.contains("NSR:GroupOfStopPlaces:1"), "alt_name must not contain the GoSP id: {alt_name}");
+    }
+
+    #[test]
+    fn gosp_alt_name_excludes_member_alt_names() {
+        // Deliberate: inheriting "Oslo Sentralstasjon" would make the 0.92-importance group
+        // outrank Oslo S itself on that query. Unlike a multimodal parent's children, members
+        // are never hidden by the proxy's multimodal=parent filter, so there is nothing to fix.
+        let config = test_config();
+        let importance_calc = ImportanceCalculator::new(&EMPTY_USAGE);
+
+        let oslo_s = make_stop_place_with_alt_names("NSR:StopPlace:59872", "Oslo S", vec![
+            ("Oslo Sentralstasjon", Some("alias")),
+        ]);
+        let stop_by_id: HashMap<&str, &StopPlaceXml> =
+            HashMap::from([("NSR:StopPlace:59872", &oslo_s)]);
+
+        let gosp = GroupOfStopPlacesXml {
+            id: "NSR:GroupOfStopPlaces:1".to_string(),
+            name: Some("Oslo".to_string()),
+            centroid: Some(CentroidXml { location: LocationXml { longitude: 10.75, latitude: 59.91 } }),
+            members: Some(MembersXml {
+                refs: vec![RefAttr { ref_: "NSR:StopPlace:59872".to_string() }],
+            }),
+        };
+
+        let result = convert_gosp(
+            config.stop_place.as_ref().unwrap(), &importance_calc, &gosp, &HashMap::new(),
+            &HashMap::new(), &stop_by_id, false,
+        ).unwrap();
+
+        let alt_name = result.content[0].name.as_ref().unwrap().alt_name.as_deref();
+        assert_eq!(alt_name, Some("Oslo S"));
     }
 
     #[test]
