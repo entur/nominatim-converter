@@ -1,4 +1,4 @@
-use super::coordinate::Coordinate;
+use crate::common::coordinate::Coordinate;
 
 #[derive(Debug, Clone, Copy)]
 pub struct BoundingBox {

@@ -14,6 +14,14 @@ pub const CACHE_DIR_ENV: &str = "NOMINATIM_CACHE_DIR";
 /// Lantmäteriet, SCB) expect a self-identifying agent.
 pub const USER_AGENT: &str = concat!("nominatim-converter/", env!("CARGO_PKG_VERSION"));
 
+/// Entur's APIs (the fare zone export) identify callers by `ET-Client-Name`; other
+/// upstreams get the User-Agent alone.
+const ET_CLIENT_NAME: &str = "entur-nominatim-converter";
+
+fn is_entur_api(url: &str) -> bool {
+    url.starts_with("https://api.entur.io/") || url.starts_with("https://api.dev.entur.io/")
+}
+
 /// Controls the download cache. Plumbed explicitly through `resolve_input` and
 /// `fetch_and_resolve` -- there is no global state, no env-var back-channel.
 ///
@@ -349,7 +357,11 @@ fn is_retryable(err: &(dyn std::error::Error + 'static)) -> bool {
 }
 
 fn default_fetch(url: &str) -> Result<DownloadStream, Box<dyn std::error::Error>> {
-    let response = ureq::get(url).header("User-Agent", USER_AGENT).call()?;
+    let mut request = ureq::get(url).header("User-Agent", USER_AGENT);
+    if is_entur_api(url) {
+        request = request.header("ET-Client-Name", ET_CLIENT_NAME);
+    }
+    let response = request.call()?;
     let content_length = response
         .headers()
         .get("content-length")
@@ -547,6 +559,14 @@ pub(crate) fn download_to_file(
     }
     result?;
 
+    // A clean short read is not an error to `read`, and a truncated XML source parses to a
+    // partial document rather than failing, so compare against the advertised length.
+    if let Some(total) = content_length
+        && downloaded != total
+    {
+        return Err(format!("truncated download: got {downloaded} of {total} bytes").into());
+    }
+
     let size_mb = downloaded as f64 / (1024.0 * 1024.0);
     eprintln!("Downloaded {size_mb:.1} MB to {}", path.display());
     Ok(())
@@ -678,6 +698,24 @@ fn glob_match(pattern: &str, name: &str) -> bool {
 mod tests {
     use super::*;
     use std::cell::Cell;
+
+    #[test]
+    fn short_read_against_content_length_fails() {
+        let path = std::env::temp_dir().join(format!("nominatim-truncated-{}.bin", std::process::id()));
+        let err = download_to_file(&b"partial"[..], &path, Some(4096)).unwrap_err();
+        assert!(err.to_string().contains("truncated download"), "got: {err}");
+        assert!(download_to_file(&b"partial"[..], &path, Some(7)).is_ok());
+        assert!(download_to_file(&b"partial"[..], &path, None).is_ok());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn entur_client_header_only_for_entur_apis() {
+        assert!(is_entur_api("https://api.entur.io/distance/netex/fare-zones"));
+        assert!(is_entur_api("https://api.dev.entur.io/distance/netex/fare-zones"));
+        assert!(!is_entur_api("https://storage.googleapis.com/marduk-production/tiamat/Current_latest.zip"));
+        assert!(!is_entur_api("https://evil.example.com/?x=https://api.entur.io/"));
+    }
 
     #[test]
     fn test_glob_match_wildcard_all() {

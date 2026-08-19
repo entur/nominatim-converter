@@ -148,8 +148,18 @@ pub struct StopPlaceConfig {
     /// only this converter consumes them, so their config lives here. Defaults when omitted.
     #[serde(default)]
     pub group_of_stop_places: GroupOfStopPlacesConfig,
+    pub fare_zones: FareZonesConfig,
     #[serde(default)]
     pub min_lines: Option<usize>,
+}
+
+/// The fare zone NeTEx export (`https://api.entur.io/distance/netex/fare-zones`), the sole
+/// source of fare zones and a required second input: a stop place import without it is a
+/// full-size index whose zone filters all return nothing.
+#[derive(Deserialize, Clone)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct FareZonesConfig {
+    pub input: SourceInput,
 }
 
 #[derive(Deserialize, Clone)]
@@ -234,7 +244,8 @@ mod tests {
             "rankAddress": 30,
             "stopTypeFactors": { "busStation": 2.0 },
             "interchangeFactors": { "preferredInterchange": 10.0 },
-            "groupOfStopPlaces": { "rankAddress": 30 }
+            "groupOfStopPlaces": { "rankAddress": 30 },
+            "fareZones": { "input": { "url": "https://api.entur.io/distance/netex/fare-zones" } }
         }
     }"#;
 

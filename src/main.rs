@@ -54,7 +54,7 @@ enum Action {
     /// the config file and append them into one NDJSON. This is the production entry point.
     Build(BuildArgs),
     /// Convert StopPlace NeTEx XML (local file)
-    Stopplace(ConvertArgs),
+    Stopplace(StopplaceArgs),
     /// Convert Matrikkel CSV data (Kartverket, local file)
     Matrikkel(MatrikkelArgs),
     /// Convert OSM PBF data (local file)
@@ -118,6 +118,17 @@ struct BuildArgs {
     force: bool,
 }
 
+/// The fare zone export is a second input to the StopPlace conversion: it is the only
+/// source of fare zones, so without it stop places carry none.
+#[derive(Parser)]
+struct StopplaceArgs {
+    #[command(flatten)]
+    convert: ConvertArgs,
+    /// Fare zone NeTEx export (from api.entur.io/distance/netex/fare-zones)
+    #[arg(long = "fare-zones", value_name = "XML")]
+    fare_zones: Option<PathBuf>,
+}
+
 #[derive(Parser)]
 struct MatrikkelArgs {
     #[command(flatten)]
@@ -161,7 +172,7 @@ fn main() {
 
     let result = match action {
         Action::Build(args) => run_build(args, opts),
-        Action::Stopplace(args) => run_conversion("StopPlace", args, Some("*.xml"), opts, |cfg| cfg.stop_place.as_ref().and_then(|s| s.min_lines), source::stopplace::convert),
+        Action::Stopplace(args) => run_stopplace(args, opts),
         Action::Matrikkel(args) => run_matrikkel(args, opts),
         Action::Osm(args) => run_conversion("OSM PBF", args, None, opts, |cfg| cfg.osm.as_ref().and_then(|s| s.min_lines), source::osm::convert),
         Action::Stedsnavn(args) => run_conversion("Stedsnavn", args, Some("*.gml"), opts, |cfg| cfg.stedsnavn.as_ref().and_then(|s| s.min_lines), source::stedsnavn::convert),
@@ -282,6 +293,25 @@ where
     Ok(())
 }
 
+/// StopPlace takes the fare zone export as a second input; resolve it here, then defer to
+/// the shared `run_conversion` plumbing.
+fn run_stopplace(
+    args: StopplaceArgs,
+    opts: RunOptions,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let fare_zones = args.fare_zones.as_deref()
+        .map(|p| resolve_input(p, None, opts.cache).map_err(|e| format!("resolving fare zone input: {e}")))
+        .transpose()?;
+    if let Some(fz) = fare_zones.as_ref() {
+        warn_if_stale("Fare zones", fz, opts.stale_after);
+    }
+    let fare_zone_path = fare_zones.as_ref().map(ResolvedInput::path);
+    run_conversion("StopPlace", args.convert, Some("*.xml"), opts, |cfg| cfg.stop_place.as_ref().and_then(|s| s.min_lines), |cfg, input, output, append, usage| {
+        source::stopplace::convert(cfg, input, output, append, fare_zone_path, usage)
+    })
+    // `fare_zones` drops here; if temp, its file is cleaned up automatically.
+}
+
 /// Matrikkel needs an extra input next to the usual conversion args: the stedsnavn GML for
 /// county data (or `--no-county` to skip it). Resolve that here, then defer to the shared
 /// `run_conversion` plumbing.
@@ -386,6 +416,16 @@ fn run_build(args: BuildArgs, opts: RunOptions) -> Result<(), Box<dyn std::error
     };
     let stedsnavn_path = stedsnavn_resolved.as_ref().map(ResolvedInput::path);
 
+    // Smallest and flakiest input, so resolve it before the multi-GB downloads. Its export
+    // changes a few times a month, hence the longer staleness threshold.
+    let fare_zones_resolved = match cfg.stop_place.as_ref() {
+        Some(sp) => {
+            let slow = RunOptions { stale_after: opts.stale_after.map(|d| d.saturating_mul(30)), ..opts };
+            Some(resolve_source(&sp.fare_zones.input, "farezones", None, slow)?)
+        }
+        None => None,
+    };
+
     if let Some(matrikkel) = cfg.matrikkel.as_ref() {
         let input = resolve_source(&matrikkel.input, "matrikkel", Some("*.csv"), opts)?;
         run_one_source("Matrikkel", input.path(), output, &cfg, matrikkel.min_lines, &usage, |c, i, o, a, u| {
@@ -401,7 +441,10 @@ fn run_build(args: BuildArgs, opts: RunOptions) -> Result<(), Box<dyn std::error
     }
     if let Some(stop_place) = cfg.stop_place.as_ref() {
         let input = resolve_source(&stop_place.input, "stopplace", Some("*.xml"), opts)?;
-        run_one_source("StopPlace", input.path(), output, &cfg, stop_place.min_lines, &usage, source::stopplace::convert)?;
+        let fare_zone_path = fare_zones_resolved.as_ref().map(ResolvedInput::path);
+        run_one_source("StopPlace", input.path(), output, &cfg, stop_place.min_lines, &usage, |c, i, o, a, u| {
+            source::stopplace::convert(c, i, o, a, fare_zone_path, u)
+        })?;
     }
     if let Some(osm) = cfg.osm.as_ref() {
         let input = resolve_source(&osm.input, "osm", None, opts)?;
@@ -492,7 +535,8 @@ fn resolve_source(
         SourceInput::Municipality(_) => {
             return Err(format!("{section}: `municipality` input is only valid for belagenhet").into());
         }
-    }?;
+    }
+    .map_err(|e| format!("{}: {e}", source_label(section)))?;
     warn_if_stale(source_label(section), &resolved, opts.stale_after);
     Ok(resolved)
 }
@@ -504,6 +548,7 @@ fn source_label(section: &str) -> &str {
         "stedsnavn" => "Stedsnavn",
         "poi" => "POI",
         "stopplace" => "StopPlace",
+        "farezones" => "Fare zones",
         "osm" => "OSM PBF",
         "belagenhet" => "Belägenhetsadress",
         "usage" => "Usage",

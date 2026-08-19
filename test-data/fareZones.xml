@@ -1,0 +1,129 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<PublicationDelivery xmlns="http://www.netex.org.uk/netex" xmlns:ns2="http://www.opengis.net/gml/3.2" version="1.14:NO-NeTEx-framework:1.5">
+    <PublicationTimestamp>2026-08-17T11:20:51.641</PublicationTimestamp>
+    <ParticipantRef>NZR</ParticipantRef>
+    <dataObjects>
+        <FareFrame version="1" id="NZR:FareFrame:1786965651641">
+            <ValidBetween>
+                <FromDate>2026-08-01T02:00:00</FromDate>
+            </ValidBetween>
+            <fareZones>
+                <FareZone changed="2026-06-09T11:51:21.562" version="5" id="FIN:FareZone:31">
+                    <keyList>
+                        <KeyValue>
+                            <Key>tzMapping</Key>
+                            <Value>FIN:TariffZone:54540</Value>
+                        </KeyValue>
+                    </keyList>
+                    <Name lang="nor">Kárášjohka</Name>
+                    <PrivateCode>54540</PrivateCode>
+                    <ns2:Polygon ns2:id="V5FINFareZone31">
+                        <ns2:exterior>
+                            <ns2:LinearRing>
+                                <ns2:posList>69.30 25.00 69.60 25.00 69.60 26.00 69.30 26.00 69.30 25.00</ns2:posList>
+                            </ns2:LinearRing>
+                        </ns2:exterior>
+                    </ns2:Polygon>
+                    <ZoneTopology>tiled</ZoneTopology>
+                    <ScopingMethod>implicitSpatialProjection</ScopingMethod>
+                    <AuthorityRef ref="FIN:Authority:FIN_ID"/>
+                    <neighbours>
+                        <FareZoneRef ref="FIN:FareZone:26"/>
+                    </neighbours>
+                </FareZone>
+                <FareZone changed="2026-06-09T11:51:21.562" version="5" id="FIN:FareZone:26">
+                    <keyList>
+                        <KeyValue>
+                            <Key>tzMapping</Key>
+                            <Value>FIN:TariffZone:54500</Value>
+                        </KeyValue>
+                    </keyList>
+                    <Name lang="nor">Álaheadju</Name>
+                    <PrivateCode>54500</PrivateCode>
+                    <ns2:Polygon ns2:id="V5FINFareZone26">
+                        <ns2:exterior>
+                            <ns2:LinearRing>
+                                <ns2:posList>69.90 23.00 70.10 23.00 70.10 23.60 69.90 23.60 69.90 23.00</ns2:posList>
+                            </ns2:LinearRing>
+                        </ns2:exterior>
+                    </ns2:Polygon>
+                    <ZoneTopology>tiled</ZoneTopology>
+                    <ScopingMethod>implicitSpatialProjection</ScopingMethod>
+                    <AuthorityRef ref="FIN:Authority:FIN_ID"/>
+                    <neighbours>
+                        <FareZoneRef ref="FIN:FareZone:31"/>
+                    </neighbours>
+                </FareZone>
+                <FareZone changed="2026-06-09T11:51:21.562" version="8" id="RUT:FareZone:4">
+                    <keyList>
+                        <KeyValue>
+                            <Key>tzMapping</Key>
+                            <Value>RUT:TariffZone:1</Value>
+                        </KeyValue>
+                    </keyList>
+                    <Name lang="nor">1</Name>
+                    <PrivateCode>1</PrivateCode>
+                    <ns2:Polygon ns2:id="V8RUTFareZone4">
+                        <ns2:exterior>
+                            <ns2:LinearRing>
+                                <ns2:posList>59.85 10.60 60.00 10.60 60.00 11.00 59.85 11.00 59.85 10.60</ns2:posList>
+                            </ns2:LinearRing>
+                        </ns2:exterior>
+                    </ns2:Polygon>
+                    <ZoneTopology>tiled</ZoneTopology>
+                    <ScopingMethod>implicitSpatialProjection</ScopingMethod>
+                    <AuthorityRef ref="RUT:Authority:RUT"/>
+                    <neighbours>
+                        <FareZoneRef ref="RUT:FareZone:13"/>
+                    </neighbours>
+                </FareZone>
+                <FareZone changed="2026-07-22T07:59:01.216" version="13" id="RUT:FareZone:13">
+                    <keyList>
+                        <KeyValue>
+                            <Key>tzMapping</Key>
+                            <Value>RUT:TariffZone:5V</Value>
+                        </KeyValue>
+                    </keyList>
+                    <Name lang="nor">5V</Name>
+                    <PrivateCode>5V</PrivateCode>
+                    <members>
+                        <ScheduledStopPointRef ref="NSR:ScheduledStopPoint:S59649"/>
+                    </members>
+                    <ns2:Polygon ns2:id="V13RUTFareZone13">
+                        <ns2:exterior>
+                            <ns2:LinearRing>
+                                <ns2:posList>59.85 10.60 60.00 10.60 60.00 11.00 59.85 11.00 59.85 10.60</ns2:posList>
+                            </ns2:LinearRing>
+                        </ns2:exterior>
+                    </ns2:Polygon>
+                    <ZoneTopology>sequence</ZoneTopology>
+                    <ScopingMethod>explicitStops</ScopingMethod>
+                    <AuthorityRef ref="RUT:Authority:RUT"/>
+                    <neighbours>
+                        <FareZoneRef ref="RUT:FareZone:4"/>
+                    </neighbours>
+                </FareZone>
+                <FareZone changed="2026-07-22T07:59:01.216" version="4" id="RUT:FareZone:20">
+                    <keyList>
+                        <KeyValue>
+                            <Key>tzMapping</Key>
+                            <Value>RUT:TariffZone:5S</Value>
+                        </KeyValue>
+                    </keyList>
+                    <Name lang="nor">Skolesone 5S</Name>
+                    <PrivateCode>5S</PrivateCode>
+                    <ns2:Polygon ns2:id="V4RUTFareZone20">
+                        <ns2:exterior>
+                            <ns2:LinearRing>
+                                <ns2:posList>59.85 10.60 60.00 10.60 60.00 11.00 59.85 11.00 59.85 10.60</ns2:posList>
+                            </ns2:LinearRing>
+                        </ns2:exterior>
+                    </ns2:Polygon>
+                    <ZoneTopology>sequence</ZoneTopology>
+                    <ScopingMethod>explicitStops</ScopingMethod>
+                    <AuthorityRef ref="RUT:Authority:RUT"/>
+                </FareZone>
+            </fareZones>
+        </FareFrame>
+    </dataObjects>
+</PublicationDelivery>

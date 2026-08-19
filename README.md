@@ -6,7 +6,7 @@ A Rust CLI tool that converts geographic data sources into Nominatim-compatible 
 
 | Source | Input format | Description |
 |--------|-------------|-------------|
-| **stopplace** | NeTEx XML | NSR/SAM stop places and groups of stop places |
+| **stopplace** | NeTEx XML | NSR/SAM stop places and groups of stop places (plus a second NeTEx input for fare zones) |
 | **matrikkel** | CSV + GML | Kartverket address registry (vegadresser) with street aggregation |
 | **stedsnavn** | GML | Kartverket place names (SSR) |
 | **poi** | NeTEx XML | Points of interest from NeTEx |
@@ -68,13 +68,30 @@ export LANTMATERIET_USER=your_username
 export LANTMATERIET_PASS=your_password
 ```
 
+### Fare zones
+
+Stop place fare zones come from their own NeTEx export, not from the stop place file:
+
+```json
+"stopPlace": {
+  "input":     { "url": "https://.../Current_latest.zip" },
+  "fareZones": { "input": { "url": "https://api.entur.io/distance/netex/fare-zones" } },
+  ...
+}
+```
+
+`fareZones` is required whenever `stopPlace` is present - without it every zone filter
+downstream returns nothing, and nothing else in the pipeline can detect that. The `stopplace`
+subcommand takes the same file via `--fare-zones` (optional there, for ad-hoc runs). See
+AGENTS.md for how stop membership is derived.
+
 ### Single-source subcommands (local files)
 
 The per-source subcommands convert one **local** file - handy for debugging or
 ad-hoc runs. They do not download; use `build` with an `input` for that.
 
 ```bash
-nominatim-converter stopplace  -i stop_places.xml -o out.ndjson -c converter.json
+nominatim-converter stopplace  -i stop_places.xml -o out.ndjson -c converter.json --fare-zones fare-zones.xml
 nominatim-converter matrikkel  -i adresse.csv -o out.ndjson -c converter.json -g stedsnavn.gml
 nominatim-converter matrikkel  -i adresse.csv -o out.ndjson -c converter.json --no-county
 nominatim-converter stedsnavn  -i stedsnavn.gml -o out.ndjson -c converter.json

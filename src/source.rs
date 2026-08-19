@@ -29,7 +29,8 @@ pub(crate) mod test_helpers {
                 "rankAddress": 30,
                 "stopTypeFactors": {{ "busStation": 2.0, "metroStation": 2.0, "railStation": 2.0 }},
                 "interchangeFactors": {{ "recommendedInterchange": 3.0, "preferredInterchange": 10.0 }},
-                "groupOfStopPlaces": {{ "rankAddress": 30 }}
+                "groupOfStopPlaces": {{ "rankAddress": 30 }},
+                "fareZones": {{ "input": {{ "file": "unused" }} }}
             }}
         }}"#)).unwrap()
     }

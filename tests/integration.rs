@@ -84,7 +84,8 @@ fn build_config_json() -> String {
     "input": {{ "file": "{stop}" }},
     "defaultValue": 50, "rankAddress": 30,
     "stopTypeFactors": {{ "busStation": 2.0 }},
-    "interchangeFactors": {{ "preferredInterchange": 10.0 }}
+    "interchangeFactors": {{ "preferredInterchange": 10.0 }},
+    "fareZones": {{ "input": {{ "file": "{farezones}" }} }}
   }}
 }}"#,
         osm = f("terningmoen.osm.pbf"),
@@ -92,6 +93,7 @@ fn build_config_json() -> String {
         matr = f("Basisdata_3420_Elverum_25833_MatrikkelenAdresse.csv"),
         poi = f("poi-test.xml"),
         stop = f("stopPlaces.xml"),
+        farezones = f("fareZones.xml"),
     )
 }
 
@@ -127,6 +129,10 @@ fn build_combines_configured_sources_into_one_file() {
     }
     // OSM is configured but the tiny test PBF matches no filter, so it contributes nothing.
     assert!(!sources.contains("openstreetmap"), "test PBF should yield no OSM entries; got {sources:?}");
+
+    // The configured fareZones input must reach the output, not just resolve.
+    let zoned = lines.iter().filter_map(|l| l["content"][0]["extra"]["fare_zones"].as_str()).count();
+    assert!(zoned > 0, "stop places should carry fare zones from the configured fareZones input");
 
     // The stedsnavn source is resolved once and reused as matrikkel's county GML; a matrikkel
     // entry with a populated county proves that wiring held.
@@ -277,6 +283,38 @@ fn output_file_exists_without_force_fails() {
 }
 
 // ===== StopPlace conversion =====
+
+#[test]
+fn stopplace_fare_zones_flag_adds_zone_categories() {
+    let output = temp_output("stopplace-fare-zones");
+    let (success, _, stderr) = run_converter(&[
+        "stopplace",
+        "-i",
+        test_data("stopPlaces.xml").to_str().unwrap(),
+        "--fare-zones",
+        test_data("fareZones.xml").to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+        "-c",
+        config_path().to_str().unwrap(),
+        "-f",
+    ]);
+    assert!(success, "stopplace failed: {stderr}");
+    let content = std::fs::read_to_string(&output).unwrap();
+    assert!(content.contains("fare_zone_id.RUT.FareZone.4"), "expected derived fare zone categories");
+    assert!(content.contains("fare_zone_authority.RUT.Authority.RUT"));
+    cleanup(&output);
+}
+
+#[test]
+fn stopplace_without_fare_zones_flag_has_no_fare_zones() {
+    let (success, stderr, output) = convert_fixture("stopplace", "stopPlaces.xml", "stopplace-no-fare-zones");
+    assert!(success, "stopplace failed: {stderr}");
+    let content = std::fs::read_to_string(&output).unwrap();
+    assert!(!content.contains("fare_zone_id."), "fare zones without -z");
+    assert!(content.contains("tariff_zone_id."), "tariff zones come from the stop place input");
+    cleanup(&output);
+}
 
 #[test]
 fn stopplace_produces_valid_ndjson() {

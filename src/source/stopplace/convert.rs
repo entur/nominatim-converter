@@ -29,6 +29,7 @@ const SECONDARY_GOSP_IMPORTANCE: f64 = 0.001;
 /// the viable band is tight (~0.88-0.96), so re-check the `oslo`/`olso` acceptance tests if changed.
 const GOSP_IMPORTANCE_CAP: f64 = 0.92;
 
+use super::farezone::{FareZone, FareZones};
 use super::popularity::calculate_stop_popularity;
 use super::xml::*;
 
@@ -49,11 +50,13 @@ pub fn convert_all(
     input: &Path,
     output: &Path,
     is_appending: bool,
+    fare_zone_input: Option<&Path>,
     usage: &UsageBoost,
 ) -> Result<usize, Box<dyn std::error::Error>> {
     let stop_place = config.stop_place.as_ref().ok_or("config is missing the required `stopPlace` section")?;
     let xml = std::fs::read_to_string(input)?;
     let result = parse_netex(&xml)?;
+    let fare_zones = load_fare_zones(fare_zone_input)?;
     let importance_calc = ImportanceCalculator::new(usage);
 
     // Build child stop types map (parentRef -> list of child stopPlaceTypes)
@@ -95,7 +98,7 @@ pub fn convert_all(
 
         if let Some(entry) = convert_stop_place(
             stop_place, &importance_calc, sp, &result.topo_places,
-            &stop_place_types, &result.fare_zones, pop, &my_child_stops,
+            &stop_place_types, &fare_zones, pop, &my_child_stops,
         ) {
             entries.push(entry);
         }
@@ -121,6 +124,19 @@ pub fn convert_all(
 
     let count = JsonWriter::export(&entries, output, is_appending)?;
     Ok(count)
+}
+
+fn load_fare_zones(input: Option<&Path>) -> Result<FareZones, Box<dyn std::error::Error>> {
+    let Some(path) = input else {
+        eprintln!("warning: no fare zone input; stop places get no fare zone data");
+        return Ok(FareZones::empty());
+    };
+    let zones = FareZones::load(path)?;
+    if zones.is_empty() {
+        // A zone-less index looks healthy from every downstream check, so stop here instead.
+        return Err(format!("fare zone input {} holds no zones", path.display()).into());
+    }
+    Ok(zones)
 }
 
 /// Log the configured secondary-GoSP demotions (and warn about configured IDs that
@@ -172,7 +188,7 @@ pub(crate) fn convert_stop_place(
     sp: &StopPlaceXml,
     topo_places: &HashMap<String, TopographicPlaceXml>,
     stop_place_types: &HashMap<String, Vec<String>>,
-    fare_zones: &HashMap<String, FareZoneXml>,
+    fare_zones: &FareZones,
     popularity: i64,
     child_stops: &[&StopPlaceXml],
 ) -> Option<NominatimPlace> {
@@ -196,8 +212,10 @@ pub(crate) fn convert_stop_place(
         .chain(sp.stop_place_type.iter().cloned())
         .collect();
 
+    let zones = fare_zones.zones_for(&sp.id, &coord);
+
     let StopCategories { visible: visible_cats, indexed: indexed_cats } = build_stop_categories(
-        sp, &role, &inferred_types, &country, &geography, fare_zones,
+        sp, &role, &inferred_types, &country, &geography, &zones,
     );
 
     let alt_names = build_stop_alt_names(sp, sp_name, child_stops);
@@ -229,7 +247,8 @@ pub(crate) fn convert_stop_place(
             centroid: coord.centroid(),
             bbox: coord.bbox(),
             extra: build_stop_extra(
-                sp, &role, &country, &geography, &visible_alt, &visible_cats, &inferred_types, child_stops,
+                sp, &role, &country, &geography, &visible_alt, &visible_cats, &inferred_types,
+                child_stops, &zones,
             ),
         }],
     };
@@ -287,7 +306,7 @@ fn build_stop_categories(
     inferred_types: &[String],
     country: &Country,
     geography: &StopGeography,
-    fare_zones: &HashMap<String, FareZoneXml>,
+    fare_zones: &[&FareZone],
 ) -> StopCategories {
     let source_cat = match role {
         StopPlaceRole::Parent => LEGACY_SOURCE_OPENSTREETMAP,
@@ -317,7 +336,7 @@ fn build_stop_categories(
     indexed_cats.push(format!("{SOURCE_NSR}.{}", role.as_str()));
     indexed_cats.push(SOURCE_NSR.to_string());
     indexed_cats.push(LAYER_STOP_PLACE.to_string());
-    append_tariff_zone_categories(&mut indexed_cats, sp, fare_zones);
+    append_zone_categories(&mut indexed_cats, sp, fare_zones);
     indexed_cats.push(format!("{COUNTRY_PREFIX}{}", country.alpha2));
     if let Some(gid) = &geography.county_gid { indexed_cats.push(county_ids_category(gid)); }
     if let Some(gid) = &geography.locality_gid { indexed_cats.push(locality_ids_category(gid)); }
@@ -327,62 +346,49 @@ fn build_stop_categories(
     StopCategories { visible: visible_cats, indexed: indexed_cats }
 }
 
-/// Append tariff/fare zone categories in 3 passes:
-/// 1. Zone IDs, split by ref shape:
-///    - `:TariffZone:` refs go to `tariff_zone_id.RUT.TariffZone.1`
-///    - `:FareZone:` refs go to `fare_zone_id.RUT.FareZone.4`
-/// 2. Zone authorities extracted from `:TariffZone:` ref prefixes (e.g. `tariff_zone_authority.RUT`)
-/// 3. Fare zone authorities from the FareZone → AuthorityRef lookup (e.g. `fare_zone_authority.RUT.Authority.RUT`)
-fn append_tariff_zone_categories(
+/// Append zone categories in 4 passes:
+/// 1. Tariff zone IDs from the stop's `<TariffZoneRef>`s (`tariff_zone_id.RUT.TariffZone.1`)
+/// 2. Fare zone IDs from the fare zone export (`fare_zone_id.RUT.FareZone.4`)
+/// 3. Tariff zone authorities from the ref prefixes (`tariff_zone_authority.RUT`)
+/// 4. Fare zone authorities from each zone's AuthorityRef (`fare_zone_authority.RUT.Authority.RUT`)
+fn append_zone_categories(
     indexed_cats: &mut Vec<String>,
     sp: &StopPlaceXml,
-    fare_zones: &HashMap<String, FareZoneXml>,
+    fare_zones: &[&FareZone],
 ) {
-    let Some(tz) = &sp.tariff_zones else { return };
-    // Pass 1: zone IDs - split by ref shape so callers can filter the two namespaces separately.
-    // NeTEx codespace types are a stable, finite vocabulary; `TariffZone` and `FareZone` are the
-    // two shapes that appear under <TariffZones>. Anything else falls through to tariff_zone_id.
-    //
-    // The `:FareZone:` substring branch MUST stay in sync with
-    // geocoder/proxy/src/main/kotlin/no/entur/geocoder/proxy/photon/PhotonFilterBuilder.kt
-    // (v2 tariffZones routing) - both decide TariffZone vs FareZone the same way.
-    for tz_ref in &tz.refs {
-        if let Some(ref_) = &tz_ref.ref_ {
-            if ref_.contains(":FareZone:") {
-                indexed_cats.push(fare_zone_id_category(ref_));
-            } else {
-                indexed_cats.push(tariff_zone_id_category(ref_));
-            }
-        }
+    for ref_ in tariff_zone_refs(sp) {
+        indexed_cats.push(tariff_zone_id_category(ref_));
     }
-    // Pass 2: tariff zone authorities (deduplicated).
+    for zone in fare_zones {
+        indexed_cats.push(fare_zone_id_category(&zone.id));
+    }
     // Zone refs follow the pattern "AUTHORITY:TariffZone:NUMBER", so the authority
     // is the prefix before the first colon.
-    let mut seen_tz_auth = std::collections::HashSet::new();
-    for tz_ref in &tz.refs {
-        if let Some(ref_) = &tz_ref.ref_
-            && ref_.contains(":TariffZone:")
-            && let Some(auth) = ref_.split(':').next()
-        {
+    let mut seen_tz_auth = HashSet::new();
+    for ref_ in tariff_zone_refs(sp) {
+        if let Some(auth) = ref_.split(':').next() {
             let cat = format!("{TARIFF_ZONE_AUTH_PREFIX}{auth}");
             if seen_tz_auth.insert(cat.clone()) {
                 indexed_cats.push(cat);
             }
         }
     }
-    // Pass 3: fare zone authorities (deduplicated)
-    let mut seen_fz_auth = std::collections::HashSet::new();
-    for tz_ref in &tz.refs {
-        if let Some(ref_) = &tz_ref.ref_
-            && let Some(fz) = fare_zones.get(ref_.as_str())
-            && let Some(auth_ref) = fz.authority_ref.as_ref().map(|a| a.ref_.as_str())
-        {
-            let cat = fare_zone_authority_category(auth_ref);
-            if seen_fz_auth.insert(cat.clone()) {
-                indexed_cats.push(cat);
-            }
+    let mut seen_fz_auth = HashSet::new();
+    for auth_ref in fare_zones.iter().filter_map(|z| z.authority.as_deref()) {
+        let cat = fare_zone_authority_category(auth_ref);
+        if seen_fz_auth.insert(cat.clone()) {
+            indexed_cats.push(cat);
         }
     }
+}
+
+/// The stop's `:TariffZone:`-shaped refs. NSR's mirrored `:FareZone:` refs are dropped; the
+/// export is the source for those.
+fn tariff_zone_refs(sp: &StopPlaceXml) -> impl Iterator<Item = &str> {
+    sp.tariff_zones.iter()
+        .flat_map(|tz| tz.refs.iter())
+        .filter_map(|r| r.ref_.as_deref())
+        .filter(|ref_| !ref_.contains(":FareZone:"))
 }
 
 /// Indexed alt names: the stop's own alternative names plus, for a multimodal parent, each
@@ -409,19 +415,12 @@ fn build_stop_extra(
     visible_cats: &[String],
     inferred_types: &[String],
     child_stops: &[&StopPlaceXml],
+    fare_zones: &[&FareZone],
 ) -> Extra {
     let stop_place_role = role.as_str();
-    // Split the stop place's <TariffZoneRef>s by ref shape into two output fields, mirroring the
-    // category-prefix split in `append_tariff_zone_categories` so downstream consumers can read
-    // each namespace cleanly without substring inspection.
-    let (tariff_zone_list, fare_zone_list) = sp.tariff_zones.as_ref()
-        .map(|tz| {
-            let (fare_refs, tariff_refs): (Vec<String>, Vec<String>) = tz.refs.iter()
-                .filter_map(|r| r.ref_.clone())
-                .partition(|ref_| ref_.contains(":FareZone:"));
-            (join_osm_values(&tariff_refs), join_osm_values(&fare_refs))
-        })
-        .unwrap_or((None, None));
+    let tariff_refs: Vec<String> = tariff_zone_refs(sp).map(String::from).collect();
+    let fare_refs: Vec<String> = fare_zones.iter().map(|z| z.id.clone()).collect();
+    let (tariff_zone_list, fare_zone_list) = (join_osm_values(&tariff_refs), join_osm_values(&fare_refs));
 
     let description = sp.description.as_ref()
         .filter(|d| !d.is_empty())
@@ -696,6 +695,12 @@ mod tests {
     static EMPTY_USAGE: std::sync::LazyLock<UsageBoost> =
         std::sync::LazyLock::new(UsageBoost::empty);
 
+    fn stop_line<'a>(content: &'a str, stop_id: &str) -> &'a str {
+        content.lines()
+            .find(|l| l.contains(&format!("\"id\":\"{stop_id}\"")))
+            .unwrap_or_else(|| panic!("no output line for {stop_id}"))
+    }
+
     // ===== Foreign importance penalty tests =====
 
     #[test]
@@ -819,7 +824,7 @@ mod tests {
         ]);
         let result = convert_stop_place(
             config.stop_place.as_ref().unwrap(), &importance_calc, &parent, &HashMap::new(),
-            &HashMap::new(), &HashMap::new(), 50, &[&child_rail, &child_tram],
+            &HashMap::new(), &FareZones::empty(), 50, &[&child_rail, &child_tram],
         ).unwrap();
         // Trailing "Nationaltheatret" is the tram child's name: child names are only deduped,
         // not filtered against the parent's name.
@@ -838,7 +843,7 @@ mod tests {
         let sp = make_stop_place("NSR:StopPlace:1", "Test", Some("funicular"), Some("other"));
         let result = convert_stop_place(
             config.stop_place.as_ref().unwrap(), &importance_calc, &sp, &HashMap::new(),
-            &HashMap::new(), &HashMap::new(), 50, &[],
+            &HashMap::new(), &FareZones::empty(), 50, &[],
         ).unwrap();
         let cats = &result.content[0].categories;
         assert!(cats.iter().any(|c| c == "legacy.category.funicular"));
@@ -852,7 +857,7 @@ mod tests {
         let sp = make_stop_place("NSR:StopPlace:1", "Test", Some("bus"), Some("onstreetBus"));
         let result = convert_stop_place(
             config.stop_place.as_ref().unwrap(), &importance_calc, &sp, &HashMap::new(),
-            &HashMap::new(), &HashMap::new(), 50, &[],
+            &HashMap::new(), &FareZones::empty(), 50, &[],
         ).unwrap();
         let cats = &result.content[0].categories;
         assert!(!cats.iter().any(|c| c == "legacy.category.bus"));
@@ -866,7 +871,7 @@ mod tests {
         let sp = make_stop_place("NSR:StopPlace:1", "Test", Some("rail"), Some("railStation"));
         let result = convert_stop_place(
             config.stop_place.as_ref().unwrap(), &importance_calc, &sp, &HashMap::new(),
-            &HashMap::new(), &HashMap::new(), 50, &[],
+            &HashMap::new(), &FareZones::empty(), 50, &[],
         ).unwrap();
         let cats = &result.content[0].categories;
         assert!(cats.iter().any(|c| c == "stop_place_type.railStation"), "{cats:?}");
@@ -882,7 +887,7 @@ mod tests {
             vec!["onstreetBus".to_string(), "railStation".to_string(), "metroStation".to_string()]);
         let result = convert_stop_place(
             config.stop_place.as_ref().unwrap(), &importance_calc, &sp, &HashMap::new(),
-            &child_types_map, &HashMap::new(), 50, &[],
+            &child_types_map, &FareZones::empty(), 50, &[],
         ).unwrap();
         let cats = &result.content[0].categories;
         assert!(cats.iter().any(|c| c == "legacy.category.funicular"));
@@ -907,7 +912,7 @@ mod tests {
         let standalone = make_stop_place("NSR:StopPlace:Solo", "Solo", Some("bus"), Some("onstreetBus"));
         let res = convert_stop_place(
             config.stop_place.as_ref().unwrap(), &importance_calc, &standalone, &HashMap::new(),
-            &HashMap::new(), &HashMap::new(), 50, &[],
+            &HashMap::new(), &FareZones::empty(), 50, &[],
         ).unwrap();
         assert_eq!(res.content[0].extra.stop_place_role.as_deref(), Some("standalone"));
 
@@ -916,7 +921,7 @@ mod tests {
         child.parent_site_ref = Some(RefAttr { ref_: "NSR:StopPlace:Parent".to_string() });
         let res = convert_stop_place(
             config.stop_place.as_ref().unwrap(), &importance_calc, &child, &HashMap::new(),
-            &HashMap::new(), &HashMap::new(), 50, &[],
+            &HashMap::new(), &FareZones::empty(), 50, &[],
         ).unwrap();
         assert_eq!(res.content[0].extra.stop_place_role.as_deref(), Some("child"));
 
@@ -927,7 +932,7 @@ mod tests {
         child_types.insert("NSR:StopPlace:Both".to_string(), vec!["onstreetBus".to_string()]);
         let res = convert_stop_place(
             config.stop_place.as_ref().unwrap(), &importance_calc, &both, &HashMap::new(),
-            &child_types, &HashMap::new(), 50, &[],
+            &child_types, &FareZones::empty(), 50, &[],
         ).unwrap();
         assert_eq!(res.content[0].extra.stop_place_role.as_deref(), Some("parent"));
     }
@@ -939,7 +944,7 @@ mod tests {
         let config = test_config();
         let input = test_data_path("stopPlaces.xml");
         let output = std::env::temp_dir().join("test_stopplace_convert_output.ndjson");
-        convert_all(&config, &input, &output, false, &UsageBoost::empty()).unwrap();
+        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty()).unwrap();
         let content = std::fs::read_to_string(&output).unwrap();
         assert!(content.contains("NominatimDumpFile"));
         assert!(content.contains("NSR:StopPlace:56697"));
@@ -951,7 +956,7 @@ mod tests {
         let config = test_config();
         let input = test_data_path("stopPlaces.xml");
         let output = std::env::temp_dir().join("test_gosp_convert_output.ndjson");
-        convert_all(&config, &input, &output, false, &UsageBoost::empty()).unwrap();
+        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty()).unwrap();
         let content = std::fs::read_to_string(&output).unwrap();
         assert!(content.contains("NSR:GroupOfStopPlaces:1"));
         assert!(content.contains("NSR:GroupOfStopPlaces:72"));
@@ -1119,7 +1124,8 @@ mod tests {
             r#"{ "input": { "file": "unused" }, "defaultValue": 50, "rankAddress": 30,
                  "foreignImportanceFactor": 0.6,
                  "stopTypeFactors": { "railStation": 2.0, "busStation": 2.0 },
-                 "interchangeFactors": { "preferredInterchange": 10.0 } }"#,
+                 "interchangeFactors": { "preferredInterchange": 10.0 },
+                 "fareZones": { "input": { "file": "unused" } } }"#,
         ).unwrap();
         let importance_calc = ImportanceCalculator::new(&EMPTY_USAGE);
 
@@ -1207,7 +1213,7 @@ mod tests {
             vec!["NSR:GroupOfStopPlaces:1".to_string()];
         let input = test_data_path("stopPlaces.xml");
         let output = std::env::temp_dir().join("test_secondary_gosp_cap.ndjson");
-        convert_all(&config, &input, &output, false, &UsageBoost::empty()).unwrap();
+        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty()).unwrap();
         let content = std::fs::read_to_string(&output).unwrap();
         let _ = std::fs::remove_file(&output);
 
@@ -1241,7 +1247,7 @@ mod tests {
         let config = test_config();
         let input = test_data_path("stopPlaces.xml");
         let output = std::env::temp_dir().join("test_convert_valid_json.ndjson");
-        convert_all(&config, &input, &output, false, &UsageBoost::empty()).unwrap();
+        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty()).unwrap();
         let lines: Vec<String> = std::fs::read_to_string(&output).unwrap().lines().map(String::from).collect();
         assert!(!lines.is_empty());
         for line in &lines {
@@ -1256,7 +1262,7 @@ mod tests {
         let config = test_config();
         let input = test_data_path("stopPlaces.xml");
         let output = std::env::temp_dir().join("test_convert_coords.ndjson");
-        convert_all(&config, &input, &output, false, &UsageBoost::empty()).unwrap();
+        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty()).unwrap();
         let lines: Vec<String> = std::fs::read_to_string(&output).unwrap().lines()
             .filter(|l| l.contains("NSR:StopPlace:"))
             .map(String::from).collect();
@@ -1272,10 +1278,10 @@ mod tests {
         let config = test_config();
         let input = test_data_path("stopPlaces.xml");
         let output = std::env::temp_dir().join("test_convert_authority.ndjson");
-        convert_all(&config, &input, &output, false, &UsageBoost::empty()).unwrap();
+        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty()).unwrap();
         let content = std::fs::read_to_string(&output).unwrap();
         assert!(content.contains("fare_zone_authority.FIN.Authority.FIN_ID"));
-        assert!(content.contains("fare_zone_authority.RUT.Authority.RUT_ID"));
+        assert!(content.contains("fare_zone_authority.RUT.Authority.RUT"));
         let _ = std::fs::remove_file(&output);
     }
 
@@ -1284,35 +1290,41 @@ mod tests {
         let config = test_config();
         let input = test_data_path("stopPlaces.xml");
         let output = std::env::temp_dir().join("test_convert_zone_id_split.ndjson");
-        convert_all(&config, &input, &output, false, &UsageBoost::empty()).unwrap();
+        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty()).unwrap();
         let content = std::fs::read_to_string(&output).unwrap();
-        // :TariffZone: refs land under tariff_zone_id.
+        // NSR's <TariffZoneRef>s land under tariff_zone_id.
         assert!(content.contains("tariff_zone_id.RUT.TariffZone.1"));
         assert!(content.contains("tariff_zone_id.FIN.TariffZone.54540"));
-        // :FareZone: refs land under fare_zone_id.
+        // Fare zones come from the fare zone export, matched by outline.
         assert!(content.contains("fare_zone_id.RUT.FareZone.4"));
         assert!(content.contains("fare_zone_id.FIN.FareZone.31"));
-        // FareZone refs should NOT also be indexed under tariff_zone_id.
+        // NSR's mirrored :FareZone: refs are dropped, not re-indexed as tariff zones.
         assert!(!content.contains("tariff_zone_id.RUT.FareZone"));
         assert!(!content.contains("tariff_zone_id.FIN.FareZone"));
         let _ = std::fs::remove_file(&output);
     }
 
     #[test]
-    fn extra_splits_tariff_zones_and_fare_zones_by_ref_shape() {
+    fn zones_come_from_the_export_not_from_nsr() {
         let config = test_config();
         let input = test_data_path("stopPlaces.xml");
-        let output = std::env::temp_dir().join("test_convert_extra_split.ndjson");
-        convert_all(&config, &input, &output, false, &UsageBoost::empty()).unwrap();
+        let output = std::env::temp_dir().join("test_convert_zone_sources.ndjson");
+        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty()).unwrap();
         let content = std::fs::read_to_string(&output).unwrap();
-        // The stop place's <TariffZones> mixes RUT:TariffZone:1 and RUT:FareZone:4; each should
-        // surface in its own extra field, not the other.
-        let rut_line = content
-            .lines()
-            .find(|l| l.contains("\"id\":\"NSR:StopPlace:") && l.contains("RUT:FareZone:4"))
-            .expect("expected an NSR stop place line carrying the RUT FareZone ref");
-        assert!(rut_line.contains("\"tariff_zones\":\"RUT:TariffZone:1\""), "got: {rut_line}");
-        assert!(rut_line.contains("\"fare_zones\":\"RUT:FareZone:4\""), "got: {rut_line}");
+
+        // Nydalen: NSR gives it RUT:TariffZone:1; the export adds RUT:FareZone:4 by outline
+        // and RUT:FareZone:13 by membership.
+        let nydalen = stop_line(&content, "NSR:StopPlace:59649");
+        assert!(nydalen.contains("\"tariff_zones\":\"RUT:TariffZone:1\""), "got: {nydalen}");
+        assert!(nydalen.contains("\"fare_zones\":\"RUT:FareZone:13;RUT:FareZone:4\""), "got: {nydalen}");
+
+        // Nyland carries a stale mirrored RUT:FareZone:99 in NSR that the export disagrees
+        // with, and sits inside RUT:FareZone:13's outline without being a member. It should
+        // end up with the export's answer only.
+        let nyland = stop_line(&content, "NSR:StopPlace:305");
+        assert!(nyland.contains("\"fare_zones\":\"RUT:FareZone:4\""), "got: {nyland}");
+        assert!(!nyland.contains("FareZone:99"), "NSR's mirrored ref must be dropped: {nyland}");
+        assert!(!nyland.contains("FareZone.13"), "explicitStops outline must not match: {nyland}");
         let _ = std::fs::remove_file(&output);
     }
 
@@ -1321,7 +1333,7 @@ mod tests {
         let config = test_config();
         let input = test_data_path("stopPlaces.xml");
         let output = std::env::temp_dir().join("test_convert_transport_mode.ndjson");
-        convert_all(&config, &input, &output, false, &UsageBoost::empty()).unwrap();
+        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty()).unwrap();
         let content = std::fs::read_to_string(&output).unwrap();
         assert!(content.contains("\"transport_mode\":\"bus:localBus\""));
         let _ = std::fs::remove_file(&output);
@@ -1332,7 +1344,7 @@ mod tests {
         let config = test_config();
         let input = test_data_path("stopPlaces.xml");
         let output = std::env::temp_dir().join("test_convert_gid.ndjson");
-        convert_all(&config, &input, &output, false, &UsageBoost::empty()).unwrap();
+        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty()).unwrap();
         let content = std::fs::read_to_string(&output).unwrap();
         assert!(content.contains("county_gid.KVE"));
         assert!(content.contains("locality_gid.KVE"));
@@ -1345,7 +1357,7 @@ mod tests {
         let input = test_data_path("stopPlaces.xml");
 
         let baseline_out = std::env::temp_dir().join("test_usage_baseline.ndjson");
-        convert_all(&config, &input, &baseline_out, false, &UsageBoost::empty()).unwrap();
+        convert_all(&config, &input, &baseline_out, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty()).unwrap();
         let baseline = std::fs::read_to_string(&baseline_out).unwrap();
         let _ = std::fs::remove_file(&baseline_out);
 
@@ -1353,7 +1365,7 @@ mod tests {
         std::fs::write(&csv, "id;name;usage\nNSR:StopPlace:56697;Oslo S;5000000\n").unwrap();
         let usage = UsageBoost::load(Some(&csv), crate::common::usage::DEFAULT_ALPHA, crate::common::usage::DEFAULT_USAGE_FLOOR).unwrap();
         let boosted_out = std::env::temp_dir().join("test_usage_boosted.ndjson");
-        convert_all(&config, &input, &boosted_out, false, &usage).unwrap();
+        convert_all(&config, &input, &boosted_out, false, Some(&test_data_path("fareZones.xml")), &usage).unwrap();
         let boosted = std::fs::read_to_string(&boosted_out).unwrap();
         let _ = std::fs::remove_file(&boosted_out);
         let _ = std::fs::remove_file(&csv);

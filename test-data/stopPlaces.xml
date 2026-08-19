@@ -178,7 +178,7 @@
                     <ParentSiteRef ref="NSR:StopPlace:59650" version="7"/>
                     <TransportMode>rail</TransportMode>
                     <tariffZones>
-                        <TariffZoneRef ref="RUT:FareZone:4" version="8"/>
+                        <TariffZoneRef ref="RUT:FareZone:99" version="8"/>
                         <TariffZoneRef ref="RUT:TariffZone:1" version="9"/>
                     </tariffZones>
                     <StopPlaceType>railStation</StopPlaceType>

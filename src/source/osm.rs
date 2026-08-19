@@ -11,7 +11,6 @@ mod admin;
 mod coordinate;
 mod entity;
 mod entrance;
-mod geometry;
 mod grid;
 mod indexing;
 mod pass4;
@@ -21,6 +20,7 @@ mod street;
 
 use std::path::Path;
 
+use crate::common::geometry;
 use crate::config::Config;
 
 use passes::OsmConverter;

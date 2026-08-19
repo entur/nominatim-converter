@@ -131,14 +131,6 @@ pub(crate) struct DescriptorXml {
     pub name: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-pub(crate) struct FareZoneXml {
-    #[serde(rename = "@id")]
-    pub id: Option<String>,
-    #[serde(rename = "AuthorityRef")]
-    pub authority_ref: Option<RefAttr>,
-}
-
 /// All NeTEx entities parsed from the XML, grouped by type. The HashMaps are keyed
 /// by entity ID for O(1) lookup during conversion (e.g. resolving topographic place
 /// references to county/municipality names).
@@ -146,7 +138,6 @@ pub(crate) struct ParseResult {
     pub stop_places: Vec<StopPlaceXml>,
     pub groups: Vec<GroupOfStopPlacesXml>,
     pub topo_places: HashMap<String, TopographicPlaceXml>,
-    pub fare_zones: HashMap<String, FareZoneXml>,
 }
 
 // ---- Parsing ----
@@ -155,7 +146,6 @@ pub(crate) fn parse_netex(xml: &str) -> Result<ParseResult, Box<dyn std::error::
     let mut stop_places = Vec::new();
     let mut groups = Vec::new();
     let mut topo_places = HashMap::new();
-    let mut fare_zones = HashMap::new();
 
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
@@ -186,13 +176,6 @@ pub(crate) fn parse_netex(xml: &str) -> Result<ParseResult, Box<dyn std::error::
                                 topo_places.insert(id.clone(), tp);
                             }
                     }
-                    "FareZone" => {
-                        let text = read_element_as_string(&mut reader, e)?;
-                        if let Ok(fz) = from_str::<FareZoneXml>(&text)
-                            && let Some(id) = &fz.id {
-                                fare_zones.insert(id.clone(), fz);
-                            }
-                    }
                     _ => {}
                 }
             }
@@ -203,7 +186,7 @@ pub(crate) fn parse_netex(xml: &str) -> Result<ParseResult, Box<dyn std::error::
         buf.clear();
     }
 
-    Ok(ParseResult { stop_places, groups, topo_places, fare_zones })
+    Ok(ParseResult { stop_places, groups, topo_places })
 }
 
 #[cfg(test)]
@@ -232,16 +215,5 @@ mod tests {
             result.groups.iter().map(|g| (g.id.as_str(), g)).collect();
         assert_eq!(by_id.get("NSR:GroupOfStopPlaces:72").unwrap().name.as_deref(), Some("Hammerfest"));
         assert_eq!(by_id.get("NSR:GroupOfStopPlaces:1").unwrap().name.as_deref(), Some("Oslo"));
-    }
-
-    #[test]
-    fn parse_fare_zones_with_authority_ref() {
-        let xml = std::fs::read_to_string(test_data_path("stopPlaces.xml")).unwrap();
-        let result = parse_netex(&xml).unwrap();
-        assert_eq!(result.fare_zones.len(), 3);
-        let fin31 = result.fare_zones.get("FIN:FareZone:31").unwrap();
-        assert_eq!(fin31.authority_ref.as_ref().unwrap().ref_, "FIN:Authority:FIN_ID");
-        let rut4 = result.fare_zones.get("RUT:FareZone:4").unwrap();
-        assert_eq!(rut4.authority_ref.as_ref().unwrap().ref_, "RUT:Authority:RUT_ID");
     }
 }

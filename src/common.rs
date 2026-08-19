@@ -5,6 +5,7 @@ pub mod coordinate;
 pub mod country;
 pub mod extra;
 pub mod geo;
+pub mod geometry;
 pub mod importance;
 pub mod text;
 pub mod translator;

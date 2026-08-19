@@ -57,6 +57,43 @@ GoSP popularity is the product of its member stops' (boosted) popularities, then
 
 GoSP IDs listed in `stopPlace.groupOfStopPlaces.secondaryGosps` are demoted in autocomplete via two converter-side levers (no user-visible field is mutated): (1) importance is pinned to `SECONDARY_GOSP_IMPORTANCE` (0.001, hardcoded - must be strictly positive because Photon's `function_score` drops docs whose total collapses to zero), and (2) `rank_address` is set to 0, which maps the doc to Photon's `AddressType.OTHER` so it forfeits the +0.4 weight `SearchQueryBuilder.setupShortQuery` gives non-"other" docs. The list is explicit rather than heuristic-detected because the redundant-aggregator pattern (e.g. NSR:GroupOfStopPlaces:7 "Bergen" coexisting with GoSP:174 "Bergen sentrum") is hard to distinguish from canonical city aggregators that just happen to have a sibling. Today only GoSP:7 is configured.
 
+### Fare zones come from their own NeTEx export
+
+Fare zones are **not** read from the stop place NeTEx. Their source is
+`https://api.entur.io/distance/netex/fare-zones` (the Distances and zones API, an open
+endpoint that 302s to a signed GCS URL), configured as the required `stopPlace.fareZones.input`
+for `build`, or passed as `--fare-zones` to the `stopplace` subcommand. NSR still mirrors fare
+zones into each stop's `<tariffZones>` as `:FareZone:`-shaped refs; those are dropped
+(`tariff_zone_refs` in `src/source/stopplace/convert.rs`) and are due to disappear from the NSR
+export anyway. Tariff zones still come from NSR - they are being retired too, but they cannot be
+derived from fare zones: the two systems disagree on membership for ~12k stops, and a handful of
+tariff zones have no fare zone counterpart.
+
+The export carries zone geometry, not stop references, so membership is derived per stop in
+`src/source/stopplace/farezone.rs`:
+
+- `ScopingMethod = explicitStops`: the zone's `<members>` (`NSR:ScheduledStopPoint:S<n>` is
+  `NSR:StopPlace:<n>`, verified against every PassengerStopAssignment). **Its outline must be
+  ignored** - those outlines cover far more stops than the zone has members, and honouring them
+  mis-assigns ~10k stops. Nine zones scope this way and list nobody; they match nothing, and say
+  so on stderr.
+- everything else: point-in-polygon of the stop centroid against the outline, via the shared
+  `common::geometry` helpers.
+
+Checked against NSR's own assignment: one stop differs, where NSR held a stale zone version.
+
+Silent degradation is the risk that shapes the error handling here, because a zone-less index
+looks healthy to every downstream check (`minLines` counts stop places, which are unaffected).
+So: a missing `fareZones` config key is a parse error, an export that yields zero zones is a
+hard error, and a truncated download fails on the content-length check in `common::input`.
+Malformed geometry fails rather than degrades - an odd or unparsable `posList` would re-pair
+every coordinate, and a second outline would silently shrink a zone to one part.
+
+Zone data changes a few times a month, so `build` resolves it with a 30x `--warn-if-stale`
+threshold; the run-wide value is tuned for daily sources. It is resolved before the multi-GB
+sources so a fetch failure costs nothing. Requests to `api.entur.io` carry Entur's
+`ET-Client-Name` header alongside the User-Agent.
+
 ### Optional per-source minimum line count (`minLines` / `--min-lines`)
 
 Each source config section takes an optional `minLines` threshold; if a conversion writes fewer entries, it exits non-zero (a tripwire against empty/truncated downloads shipping a degraded index). In `build`, each source's `minLines` is enforced from its config section. The single-source subcommands additionally accept `--min-lines <N>`, which wins over `minLines.<source>` (and `--min-lines 0` disables the check for one run); unset in both means no check. Two non-obvious semantics: the count is the entries emitted by **this run** (tracked in `JsonWriter`, returned up through each converter as `Result<usize>`), so it is correct in `-a` append mode; and for a `municipality` build (multiple municipalities) the threshold applies to the **run total**, not per municipality. Thresholds are profile-specific: `geocoder/photon/import/config/converter-prod.json` holds Norway values, and `converter-sweden-test.json` holds Sweden values (much larger belagenhet, no Norway-only sources). Each per-environment `converter-*.json` is a complete profile (sources + scoring), picked by name by the import script. `converter.example.json` deliberately omits `minLines` (it doubles as the test fixture).
@@ -119,7 +156,7 @@ This converter produces `nominatim.ndjson` which is imported into the **Photon g
 - **source (extra field)** — Acceptance tests filter by data source (`openaddresses`, `openstreetmap`). Source tags must match expected values.
 - **importance** — Directly affects result ranking. Acceptance tests use `priorityThresh` to verify top-N placement.
 - **county_gid / locality_gid (extra fields)** — Used for `boundary.county_ids` filtering. Must support both full (`KVE:TopographicPlace:18`) and numeric (`18`) formats.
-- **tariff_zones (extra field)** — Used for tariff-based filtering downstream.
+- **tariff_zones / fare_zones (extra fields)** — Used for zone-based filtering downstream. Tariff zones come from the stop place NeTEx; fare zones from the separate fare zone export.
 - **centroid coordinates** — Reverse geocoding, focus-point disambiguation, and distance calculations all depend on coordinate accuracy.
 
 ### Acceptance test patterns worth knowing
@@ -135,16 +172,17 @@ This converter produces `nominatim.ndjson` which is imported into the **Photon g
 
 All source converters have unit tests (`cargo test --release` runs ~240 tests). Coverage by module:
 
-1. **stopplace** (36 tests): NeTEx parsing, popularity calculation (base × type factors × interchange), GroupOfStopPlaces popularity (product of member popularities), transport mode formatting (mode:submode, parent collecting children with dedup), alt name handling (label → visible, translation → indexed only), category generation (funicular included, bus excluded, multimodal.parent marker), tariff zone ordering, full conversion integration tests (coordinates, authority categories, county_gid/locality_gid, secondary-GoSP importance cap and rank_address)
+1. **stopplace** (59 tests): NeTEx parsing, fare zone membership (outline match, explicitStops members, ordering), popularity calculation (base × type factors × interchange), GroupOfStopPlaces popularity (product of member popularities), transport mode formatting (mode:submode, parent collecting children with dedup), alt name handling (label → visible, translation → indexed only), category generation (funicular included, bus excluded, multimodal.parent marker), zone category ordering, full conversion integration tests (coordinates, authority categories, county_gid/locality_gid, secondary-GoSP importance cap and rank_address)
 2. **stedsnavn** (22 tests): Target type recognition (by/bydel/tettsted/tettsteddel/tettbebyggelse), spelling status filtering (vedtatt/godkjent/privat/samlevedtak accepted), GML parsing with historisk alt spelling, diacritics preservation, field validation (source, accuracy, country_code, importance, rank_address), locality/county GID format, coordinate ranges, titleized names
 3. **matrikkel** (12 tests): CSV→NDJSON conversion, field validation (id, source, accuracy, country_a, locality, borough, housenumber with letter suffix), county population via stedsnavn GML, address + street entry generation, category correctness, coordinate validity, importance range, county GID in categories
 4. **poi** (7 tests): ValidBetween date filtering (valid/expired/future/always-valid/open-ended), coordinate and category correctness
-5. **integration** (32 tests, `tests/integration.rs`): Black-box binary tests via `std::process::Command`. CLI behavior (no args, missing input, output-exists-without-force), all subcommands produce valid NDJSON with correct headers/sources/fields, append mode doesn't duplicate headers, force flag overwrites, coordinate validity, matrikkel --no-county flag, matrikkel missing GML error, expired POI filtering, Norwegian diacritics; `build` combines configured sources into one file with a single header, skips omitted sections, rejects a section missing its `input`, rejects region-on-wrong-section, errors when no source is configured, and refuses an existing output without `-f`
+5. **integration** (34 tests, `tests/integration.rs`): Black-box binary tests via `std::process::Command`. CLI behavior (no args, missing input, output-exists-without-force), all subcommands produce valid NDJSON with correct headers/sources/fields, append mode doesn't duplicate headers, force flag overwrites, coordinate validity, matrikkel --no-county flag, matrikkel missing GML error, expired POI filtering, Norwegian diacritics; `build` combines configured sources into one file with a single header, skips omitted sections, rejects a section missing its `input`, rejects region-on-wrong-section, errors when no source is configured, and refuses an existing output without `-f`
 6. **osm** (47 tests): Popularity formula (base × max priority, highest priority wins, unmatched/empty → zero), filter_tags (keeps only configured filters, sorted BTreeMap keys, empty for no matches), rank_address determination (boundary > place > road > building > poi priority), convert_node integration (object_type, accuracy, source, categories from filtered tags, alt name extraction from filtered tags only, en:name, OSM ID in extra and indexed alt_names, coordinates, importance reflects priority), admin boundary integration (county_gid, locality_gid, titleized municipality name, county_gid in categories), extract_country_code (ISO3166-2, country_code tag, numeric ref → Norway), as_category colon replacement, plus low-level tests (CoordinateStore, BoundingBox, ray casting, street segment distance, centroid calculation, titleize)
 
 ### Test data fixtures
 
-- `test-data/stopPlaces.xml` — NeTEx with TopographicPlaces (counties/municipalities for topo lookups), 2 GroupOfStopPlaces, 6 StopPlaces (bus, rail, parent, child, alt names, submodes), 3 FareZones
+- `test-data/stopPlaces.xml` — NeTEx with TopographicPlaces (counties/municipalities for topo lookups), 2 GroupOfStopPlaces, 6 StopPlaces (bus, rail, parent, child, alt names, submodes). Its `<FareFrame>` and the stops' `:FareZone:` refs are kept deliberately: NSR still ships them, and the tests prove the converter ignores them
+- `test-data/fareZones.xml` — fare zone export: 3 spatial zones around the stop fixtures, one `explicitStops` zone whose outline covers both Oslo stops but which lists only one as a member, and one `explicitStops` zone with no members at all
 - `test-data/poi-test.xml` — 5 TopographicPlaces with varying validity periods
 - `test-data/bydel.gml` — 2 Oslo bydeler (Grünerløkka, Frogner) in UTM33
 - `test-data/Basisdata_3420_Elverum_25833_MatrikkelenAdresse.csv` — Real Elverum address data (10,871 lines)
@@ -164,6 +202,6 @@ All source converters have unit tests (`cargo test --release` runs ~240 tests). 
 - **quick-xml `read_text` doesn't work with `Reader<BufReader<File>>`**: Use manual text collection with `Event::Text` instead.
 - **Serde rename for XML attributes**: Use `#[serde(rename = "@ref")]` for XML attributes parsed by quick-xml.
 - **Alt name deduplication must preserve order**: Use a `HashSet` seen-tracker with `Vec` output, not `BTreeSet` or `sort + dedup`.
-- **Tariff zone categories have specific ordering**: Built in 3 separate passes (IDs, authorities, fare zone authorities) matching the original converter.
+- **Zone categories have specific ordering**: Built in 4 passes (tariff zone IDs, fare zone IDs, tariff zone authorities, fare zone authorities).
 - **HashMap iteration is non-deterministic**: Never rely on HashMap iteration order for output. Use Vec for ordered processing, BTreeMap for sorted keys.
 - **Street matching has edge cases**: The 100m threshold + 0.001° cache precision means ~0.1% of street lookups differ from the original converter due to coordinate quantization.

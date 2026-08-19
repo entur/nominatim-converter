@@ -1,4 +1,5 @@
 mod convert;
+pub(crate) mod farezone;
 mod popularity;
 pub(crate) mod xml;
 
@@ -8,9 +9,10 @@ pub fn convert(
     input: &std::path::Path,
     output: &std::path::Path,
     is_appending: bool,
+    fare_zones: Option<&std::path::Path>,
     usage: &crate::common::usage::UsageBoost,
 ) -> Result<usize, Box<dyn std::error::Error>> {
-    convert::convert_all(config, input, output, is_appending, usage)
+    convert::convert_all(config, input, output, is_appending, fare_zones, usage)
 }
 
 #[cfg(test)]
