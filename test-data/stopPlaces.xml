@@ -178,7 +178,11 @@
                     <ParentSiteRef ref="NSR:StopPlace:59650" version="7"/>
                     <TransportMode>rail</TransportMode>
                     <tariffZones>
+                        <!-- 99 before 4, and 99 twice at two versions: the fallback must sort
+                             and dedup to match the export path's IDs. -->
                         <TariffZoneRef ref="RUT:FareZone:99" version="8"/>
+                        <TariffZoneRef ref="RUT:FareZone:4" version="8"/>
+                        <TariffZoneRef ref="RUT:FareZone:99" version="7"/>
                         <TariffZoneRef ref="RUT:TariffZone:1" version="9"/>
                     </tariffZones>
                     <StopPlaceType>railStation</StopPlaceType>
@@ -229,6 +233,10 @@
             </stopPlaces>
         </SiteFrame>
         <FareFrame modification="new" version="1" id="NSR:FareFrame:1590165423">
+            <!-- Fallback authorities. RUT_ID deliberately differs from fareZones.xml's
+                 RUT:Authority:RUT so tests can tell which source a run used; real NSR agrees
+                 with the export. No entry for RUT:FareZone:99: an unmapped ref stays
+                 authority-less. -->
             <fareZones>
                 <FareZone changed="2025-01-22T20:53:20.134" modification="new" version="5" id="FIN:FareZone:31">
                     <AuthorityRef ref="FIN:Authority:FIN_ID"/>

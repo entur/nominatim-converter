@@ -46,10 +46,6 @@ pub(crate) struct FareZones {
 }
 
 impl FareZones {
-    pub(crate) fn empty() -> Self {
-        Self { zones: Vec::new() }
-    }
-
     pub(crate) fn load(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         let mut zones = parse_fare_zones(&std::fs::read_to_string(path)?)?;
         // By ID so zones_for is stable, newest version first so the dedup keeps it.

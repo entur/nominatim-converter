@@ -130,9 +130,12 @@ fn build_combines_configured_sources_into_one_file() {
     // OSM is configured but the tiny test PBF matches no filter, so it contributes nothing.
     assert!(!sources.contains("openstreetmap"), "test PBF should yield no OSM entries; got {sources:?}");
 
-    // The configured fareZones input must reach the output, not just resolve.
-    let zoned = lines.iter().filter_map(|l| l["content"][0]["extra"]["fare_zones"].as_str()).count();
-    assert!(zoned > 0, "stop places should carry fare zones from the configured fareZones input");
+    // The configured fareZones input must reach the output, not just resolve. RUT:FareZone:13
+    // is membership-derived and exists only in the export, so the NSR fallback can't fake it.
+    let zoned: Vec<&str> = lines.iter()
+        .filter_map(|l| l["content"][0]["extra"]["fare_zones"].as_str()).collect();
+    assert!(zoned.iter().any(|z| z.contains("RUT:FareZone:13")),
+        "stop places should carry fare zones from the configured fareZones input; got {zoned:?}");
 
     // The stedsnavn source is resolved once and reused as matrikkel's county GML; a matrikkel
     // entry with a populated county proves that wiring held.
@@ -142,6 +145,35 @@ fn build_combines_configured_sources_into_one_file() {
     });
     assert!(matrikkel_has_county, "matrikkel county should be populated from the reused stedsnavn GML");
 
+    cleanup(&output);
+    let _ = std::fs::remove_file(&config);
+}
+
+#[test]
+fn build_without_fare_zones_key_falls_back_to_nsr_refs() {
+    // The path d4e7c54 opened: stopPlace configured, fareZones absent, nothing to resolve.
+    let f = |name: &str| test_data(name).display().to_string();
+    let config_json = format!(
+        r#"{{
+  "stopPlace": {{
+    "input": {{ "file": "{stop}" }},
+    "defaultValue": 50, "rankAddress": 30,
+    "stopTypeFactors": {{ "busStation": 2.0 }},
+    "interchangeFactors": {{ "preferredInterchange": 10.0 }}
+  }}
+}}"#,
+        stop = f("stopPlaces.xml"),
+    );
+    let config = write_temp_config("build-no-fare-zones", &config_json);
+    let output = temp_output("build-no-fare-zones");
+    let (success, _, stderr) = run_converter(&[
+        "build", "-o", output.to_str().unwrap(), "-c", config.to_str().unwrap(), "-f",
+    ]);
+    assert!(success, "build failed: {stderr}");
+    assert!(stderr.contains("falling back to NSR"), "degraded mode must announce itself: {stderr}");
+    let content = std::fs::read_to_string(&output).unwrap();
+    assert!(content.contains("fare_zone_id.RUT.FareZone.99"), "expected NSR fare zone refs");
+    assert!(!content.contains("fare_zone_id.RUT.FareZone.13"), "export-only zone must not appear");
     cleanup(&output);
     let _ = std::fs::remove_file(&config);
 }
@@ -301,8 +333,11 @@ fn stopplace_fare_zones_flag_adds_zone_categories() {
     ]);
     assert!(success, "stopplace failed: {stderr}");
     let content = std::fs::read_to_string(&output).unwrap();
-    assert!(content.contains("fare_zone_id.RUT.FareZone.4"), "expected derived fare zone categories");
-    assert!(content.contains("fare_zone_authority.RUT.Authority.RUT"));
+    assert!(content.contains("fare_zone_id.RUT.FareZone.13"), "expected derived fare zone categories");
+    assert!(content.contains("fare_zone_authority.RUT.Authority.RUT\""));
+    // Export-only: FareZone:99 is NSR's alone, and RUT_ID is the input's own FareFrame.
+    assert!(!content.contains("FareZone.99"), "NSR refs must not leak in when an export is given");
+    assert!(!content.contains("RUT.Authority.RUT_ID"));
     cleanup(&output);
 }
 
@@ -310,10 +345,15 @@ fn stopplace_fare_zones_flag_adds_zone_categories() {
 fn stopplace_without_fare_zones_flag_falls_back_to_nsr_refs() {
     let (success, stderr, output) = convert_fixture("stopplace", "stopPlaces.xml", "stopplace-no-fare-zones");
     assert!(success, "stopplace failed: {stderr}");
+    assert!(stderr.contains("falling back to NSR"), "degraded mode must announce itself: {stderr}");
     let content = std::fs::read_to_string(&output).unwrap();
     // RUT:FareZone:99 exists only as an NSR ref, never in the export.
     assert!(content.contains("fare_zone_id.RUT.FareZone.99"), "expected NSR fare zone refs");
-    assert!(!content.contains("fare_zone_authority."), "NSR refs carry no authority");
+    // Sorted (99 comes last though NSR lists it first) and deduped (NSR lists 99 twice).
+    assert!(content.contains(r#""fare_zones":"RUT:FareZone:4;RUT:FareZone:99""#), "sorted and deduped");
+    // Authorities come from the input's own FareFrame, which says RUT_ID where the export says RUT.
+    assert!(content.contains("fare_zone_authority.RUT.Authority.RUT_ID"));
+    assert!(!content.contains("fare_zone_id.RUT.FareZone.13"), "export-only zone must not appear");
     assert!(content.contains("tariff_zone_id."), "tariff zones come from the stop place input");
     cleanup(&output);
 }

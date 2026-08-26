@@ -93,6 +93,16 @@ pub(crate) struct TariffZoneRefXml {
     pub ref_: Option<String>,
 }
 
+/// A `<FareZone>` in the input's own `<FareFrame>`. Only the authority is read; the zone's
+/// geometry and members are the fare zone export's job.
+#[derive(Debug, Deserialize)]
+pub(crate) struct FareZoneXml {
+    #[serde(rename = "@id")]
+    pub id: String,
+    #[serde(rename = "AuthorityRef")]
+    pub authority_ref: Option<RefAttr>,
+}
+
 #[derive(Debug, Deserialize)]
 pub(crate) struct GroupOfStopPlacesXml {
     #[serde(rename = "@id")]
@@ -138,6 +148,9 @@ pub(crate) struct ParseResult {
     pub stop_places: Vec<StopPlaceXml>,
     pub groups: Vec<GroupOfStopPlacesXml>,
     pub topo_places: HashMap<String, TopographicPlaceXml>,
+    /// Fare zone ID -> AuthorityRef, from the input's `<FareFrame>`. Only read when no fare
+    /// zone export is configured; see `ZoneSource` in `convert.rs`.
+    pub fare_zone_authorities: HashMap<String, String>,
 }
 
 // ---- Parsing ----
@@ -146,6 +159,7 @@ pub(crate) fn parse_netex(xml: &str) -> Result<ParseResult, Box<dyn std::error::
     let mut stop_places = Vec::new();
     let mut groups = Vec::new();
     let mut topo_places = HashMap::new();
+    let mut fare_zone_authorities = HashMap::new();
 
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
@@ -162,6 +176,13 @@ pub(crate) fn parse_netex(xml: &str) -> Result<ParseResult, Box<dyn std::error::
                         if let Ok(sp) = from_str::<StopPlaceXml>(&text) {
                             stop_places.push(sp);
                         }
+                    }
+                    "FareZone" => {
+                        let text = read_element_as_string(&mut reader, e)?;
+                        if let Ok(fz) = from_str::<FareZoneXml>(&text)
+                            && let Some(auth) = fz.authority_ref {
+                                fare_zone_authorities.insert(fz.id, auth.ref_);
+                            }
                     }
                     "GroupOfStopPlaces" => {
                         let text = read_element_as_string(&mut reader, e)?;
@@ -186,7 +207,7 @@ pub(crate) fn parse_netex(xml: &str) -> Result<ParseResult, Box<dyn std::error::
         buf.clear();
     }
 
-    Ok(ParseResult { stop_places, groups, topo_places })
+    Ok(ParseResult { stop_places, groups, topo_places, fare_zone_authorities })
 }
 
 #[cfg(test)]
@@ -205,6 +226,17 @@ mod tests {
         let rail_station = result.stop_places.iter().find(|sp| sp.id == "NSR:StopPlace:305").unwrap();
         assert_eq!(rail_station.transport_mode.as_deref(), Some("rail"));
         assert_eq!(rail_station.stop_place_type.as_deref(), Some("railStation"));
+    }
+
+    #[test]
+    fn parse_fare_zone_authorities_from_fare_frame() {
+        let xml = std::fs::read_to_string(test_data_path("stopPlaces.xml")).unwrap();
+        let auth = parse_netex(&xml).unwrap().fare_zone_authorities;
+        assert_eq!(auth.get("FIN:FareZone:31").map(String::as_str), Some("FIN:Authority:FIN_ID"));
+        // Deliberately not the export's RUT:Authority:RUT - proves which source a run used.
+        assert_eq!(auth.get("RUT:FareZone:4").map(String::as_str), Some("RUT:Authority:RUT_ID"));
+        // NSR mirrors this ref onto a stop but declares no zone for it.
+        assert!(!auth.contains_key("RUT:FareZone:99"));
     }
 
     #[test]

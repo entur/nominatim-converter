@@ -148,16 +148,17 @@ pub struct StopPlaceConfig {
     /// only this converter consumes them, so their config lives here. Defaults when omitted.
     #[serde(default)]
     pub group_of_stop_places: GroupOfStopPlacesConfig,
-    /// Omit to build without fare zones; the run then warns and every zone filter is empty.
+    /// Omit and the run warns and falls back to NSR's mirrored refs, which reproduce the
+    /// export's zone IDs and authorities but are due to disappear from the NSR export.
     #[serde(default)]
     pub fare_zones: Option<FareZonesConfig>,
     #[serde(default)]
     pub min_lines: Option<usize>,
 }
 
-/// The fare zone NeTEx export (`https://api.entur.io/distance/netex/fare-zones`), the sole
-/// source of fare zones. Optional, but leaving it out yields a full-size index whose zone
-/// filters all return nothing, so any real build should set it.
+/// The fare zone NeTEx export (`https://api.entur.io/distance/netex/fare-zones`), the
+/// authoritative source of fare zones. Optional: without it a run falls back to NSR's mirrored
+/// refs (see `ZoneSource`), which match today but are being retired.
 #[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct FareZonesConfig {

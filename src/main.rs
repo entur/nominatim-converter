@@ -118,8 +118,8 @@ struct BuildArgs {
     force: bool,
 }
 
-/// The fare zone export is a second input to the StopPlace conversion: it is the only
-/// source of fare zones, so without it stop places carry none.
+/// The fare zone export is a second input to the StopPlace conversion. Without it, stop places
+/// fall back to NSR's mirrored `:FareZone:` refs - see `ZoneSource`.
 #[derive(Parser)]
 struct StopplaceArgs {
     #[command(flatten)]

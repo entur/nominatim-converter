@@ -81,10 +81,12 @@ Stop place fare zones come from their own NeTEx export, not from the stop place 
 ```
 
 `fareZones` is optional. Leave it out and the converter falls back to the `:FareZone:` refs NSR
-mirrors into each stop. Those matched the export on all but one stop at the last check, but
-carry no authority (so `fareZoneAuthorities` filters match nothing) and are due to disappear
-from the NSR export, so any real build should set `fareZones`. The `stopplace` subcommand takes the same file via `--fare-zones`. See AGENTS.md for how
-stop membership is derived.
+mirrors into each stop, with authorities from the same input's `<FareFrame>`; on a full run that
+reproduces the export's zone IDs and authorities exactly. It is still a mirror of a source due
+to disappear from the NSR export, so set `fareZones` for anything long-lived - but an ad-hoc run
+or a country without fare zones no longer needs it. The two never mix: with `fareZones` set, the
+`<FareFrame>` is not read. The `stopplace` subcommand takes the same file via `--fare-zones`.
+See AGENTS.md for how stop membership is derived.
 
 ### Single-source subcommands (local files)
 

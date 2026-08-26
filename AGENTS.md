@@ -65,13 +65,17 @@ endpoint that 302s to a signed GCS URL), configured as `stopPlace.fareZones.inpu
 or passed as `--fare-zones` to the `stopplace` subcommand. NSR still mirrors fare
 zones into each stop's `<tariffZones>` as `:FareZone:`-shaped refs; with an export loaded those
 are ignored (`tariff_zone_refs` in `src/source/stopplace/convert.rs`), since they are due to
-disappear from the NSR export anyway. Without one they are the fallback: `stop_fare_zones` takes
-the mirrored refs verbatim as fare zone IDs, minus authorities, which NSR doesn't carry and
-which can't be derived from the zone prefix (`FIN:FareZone:31` belongs to `FIN:Authority:FIN_ID`).
-The choice is per run, not per stop - once an export is loaded it is authoritative, so a stop it
-places in no zone stays zone-less. Tariff zones still come from NSR - they are being retired too, but they cannot be
-derived from fare zones: the two systems disagree on membership for ~12k stops, and a handful of
-tariff zones have no fare zone counterpart.
+disappear from the NSR export anyway. Without one they are the fallback: the mirrored refs
+become the fare zone IDs (sorted and deduped, as the export path's are), and their authorities
+come from the same input's own `<FareFrame>`, which declares all 485 zones with an
+`AuthorityRef`. The authority is not derivable from the zone prefix (`FIN:FareZone:31` belongs
+to `FIN:Authority:FIN_ID`), so it has to be read from a file either way.
+
+`ZoneSource` in `convert.rs` resolves this once per run, before any stop is converted, and the
+two sources never mix: with an export configured the `<FareFrame>` is not consulted at all, and
+a stop the export places in no zone stays zone-less rather than falling back. Tariff zones still come from NSR - they are being retired too,
+but they cannot be derived from fare zones: the two systems disagree on membership for ~12k
+stops, and a handful of tariff zones have no fare zone counterpart.
 
 The export carries zone geometry, not stop references, so membership is derived per stop in
 `src/source/stopplace/farezone.rs`:
@@ -88,11 +92,29 @@ Checked against NSR's own assignment: one stop differs, where NSR held a stale z
 
 Silent degradation is the risk that shapes the error handling here, because a zone-less index
 looks healthy to every downstream check (`minLines` counts stop places, which are unaffected).
-So: a missing `fareZones` config key warns on stderr and falls back to NSR's refs, an export
-that yields zero zones is a hard error, and a truncated download fails on the content-length
-check in `common::input`.
-Malformed geometry fails rather than degrades - an odd or unparsable `posList` would re-pair
-every coordinate, and a second outline would silently shrink a zone to one part.
+So an export that yields zero zones is a hard error, and a truncated download fails on the
+content-length check in `common::input`. Malformed geometry fails rather than degrades - an odd
+or unparsable `posList` would re-pair every coordinate, and a second outline would silently
+shrink a zone to one part.
+
+The NSR fallback is the one place that risk is accepted, and it holds up better than its name
+suggests. Diffed over a full run on 2026-08-26, the zone ID sets were identical on all 58,139
+records, multi-zone membership included; the authorities read from the `<FareFrame>` match the
+export on all 485 zones. That is structural rather than lucky - Tiamat holds the same zone
+definitions and computes the assignment itself, and the distance API republishes Tiamat's data,
+so the fallback is Tiamat's own answer for the same zones, not an independent guess. Zone
+versions can be ignored: the emitted category is version-less, IDs are stable across versions,
+and the two publishers version independently (the distance export runs 1-11 ahead on
+byte-identical content), so there is nothing to be stale against.
+
+What remains: a one-cycle lag if a geometry changes between Tiamat's recomputation and the next
+NSR dump (self-healing, historically 0-1 stops), no validation that a mirrored ref names a zone
+that exists, and the refs' pending removal from the NSR export. That last one is why
+`fallback_warning` separates "falling back on N of M stop places" from "no `:FareZone:` refs at
+all" - the second is the shape Sweden and Denmark already run
+(`converter-{sweden,denmark}-test.json` set no `fareZones`, and neither input holds a single
+`:FareZone:` ref), and the shape Norway takes the day the refs disappear. Nothing else would
+catch it: `minLines` counts stop places, which are unaffected.
 
 Zone data changes a few times a month, so `build` resolves it with a 30x `--warn-if-stale`
 threshold; the run-wide value is tuned for daily sources. It is resolved before the multi-GB
