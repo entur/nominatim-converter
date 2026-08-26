@@ -160,6 +160,7 @@
                         </Location>
                     </Centroid>
                     <TopographicPlaceRef ref="KVE:TopographicPlace:0301" created="2025-05-13T12:00:13.849" version="13"/>
+                    <ParentSiteRef ref="NSR:StopPlace:59650" version="7"/>
                     <tariffZones>
                         <TariffZoneRef ref="RUT:FareZone:4" version="8"/>
                         <TariffZoneRef ref="RUT:TariffZone:1" version="9"/>
@@ -187,6 +188,18 @@
                     </tariffZones>
                     <StopPlaceType>railStation</StopPlaceType>
                     <Weighting>interchangeAllowed</Weighting>
+                </StopPlace>
+                <StopPlace created="2017-06-19T21:12:46.288" changed="2024-02-05T19:56:03.859" modification="new" version="7" id="NSR:StopPlace:59650">
+                    <Name lang="nor">Nyland</Name>
+                    <Centroid>
+                        <Location>
+                            <Longitude>10.871645</Longitude>
+                            <Latitude>59.943941</Latitude>
+                        </Location>
+                    </Centroid>
+                    <TopographicPlaceRef ref="KVE:TopographicPlace:0301" created="2025-05-13T12:00:13.871" version="13"/>
+                    <!-- Multimodal parent of 59649 and 305. No tariffZones of its own, and no
+                         explicitStops zone lists it - a hub's zones come from its children. -->
                 </StopPlace>
                 <StopPlace created="2018-04-13T17:16:50.111" changed="2024-04-09T19:15:23.929" modification="new" version="6" id="NSR:StopPlace:59291">
                     <Name lang="nor">Alta lufthavn</Name>

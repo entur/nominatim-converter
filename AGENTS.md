@@ -85,6 +85,11 @@ The export carries zone geometry, not stop references, so membership is derived 
   ignored** - those outlines cover far more stops than the zone has members, and honouring them
   mis-assigns ~10k stops. Nine zones scope this way and list nobody; they match nothing, and say
   so on stderr.
+- members name quays' stop places, never the multimodal parent above them, so a stop's zones are
+  unioned with its children's (`zones_with_children`). Without that, 49 of 1,100 parents lacked a
+  zone their own children were in, 35 of them via `explicitStops` - and because the proxy
+  defaults to `multimodal=parent`, a zone filter dropped the hub and returned only its children.
+  Downward only: a child never inherits its parent's or a sibling's zones.
 - everything else: point-in-polygon of the stop centroid against the outline, via the shared
   `common::geometry` helpers.
 

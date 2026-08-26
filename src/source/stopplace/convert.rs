@@ -153,6 +153,28 @@ impl<'a> ZoneSource<'a> {
         Ok(Self::Export(zones))
     }
 
+    /// A stop's own fare zones, plus every zone its children are in. `explicitStops` zones list
+    /// a child's ScheduledStopPoint and never the parent's, so without the union a multimodal
+    /// parent misses zones all of its children sit in - and since the proxy defaults to
+    /// `multimodal=parent`, a zone filter then hides the hub and returns only its children.
+    fn zones_with_children(
+        &self,
+        sp: &StopPlaceXml,
+        coord: &Coordinate,
+        children: &[&StopPlaceXml],
+    ) -> StopFareZones {
+        let mut zones = self.zones_for(sp, coord);
+        for child in children {
+            let Some(centroid) = child.centroid.as_ref() else { continue };
+            let child_zones =
+                self.zones_for(child, &Coordinate::new(centroid.location.latitude, centroid.location.longitude));
+            zones.ids.extend(child_zones.ids);
+            zones.authorities.extend(child_zones.authorities);
+        }
+        zones.sort_dedup();
+        zones
+    }
+
     /// One stop's fare zones. Never mixes the two sources.
     fn zones_for(&self, sp: &StopPlaceXml, coord: &Coordinate) -> StopFareZones {
         match self {
@@ -164,11 +186,7 @@ impl<'a> ZoneSource<'a> {
                 }
             }
             Self::NsrRefs(authorities) => {
-                // Sorted and deduped to match the export path, whose IDs come out of
-                // `FareZones::load` that way.
-                let mut ids: Vec<String> = nsr_fare_zone_refs(sp).map(String::from).collect();
-                ids.sort();
-                ids.dedup();
+                let ids: Vec<String> = nsr_fare_zone_refs(sp).map(String::from).collect();
                 let auths = ids.iter().filter_map(|id| authorities.get(id).cloned()).collect();
                 StopFareZones { ids, authorities: auths }
             }
@@ -265,7 +283,7 @@ pub(crate) fn convert_stop_place(
         .chain(sp.stop_place_type.iter().cloned())
         .collect();
 
-    let zones = zone_source.zones_for(sp, &coord);
+    let zones = zone_source.zones_with_children(sp, &coord, child_stops);
 
     let StopCategories { visible: visible_cats, indexed: indexed_cats } = build_stop_categories(
         sp, &role, &inferred_types, &country, &geography, &zones,
@@ -458,6 +476,18 @@ fn zone_refs(sp: &StopPlaceXml) -> impl Iterator<Item = &str> {
 struct StopFareZones {
     ids: Vec<String>,
     authorities: Vec<String>,
+}
+
+impl StopFareZones {
+    /// Both paths end up here, so a fallback index's IDs land in the same order as an export
+    /// one's (`FareZones::load` sorts and dedups), and NSR listing a zone twice can't duplicate
+    /// a category.
+    fn sort_dedup(&mut self) {
+        for v in [&mut self.ids, &mut self.authorities] {
+            v.sort();
+            v.dedup();
+        }
+    }
 }
 
 /// Indexed alt names: the stop's own alternative names plus, for a multimodal parent, each
@@ -1379,6 +1409,29 @@ mod tests {
         assert!(content.contains("fare_zone_authority.FIN.Authority.FIN_ID"));
         // The FareFrame declares no zone for RUT:FareZone:99, so that ref stays authority-less.
         assert!(!content.contains("fare_zone_authority.RUT.Authority.RUT\""));
+        // The hub carries no refs of its own; both zones come from its two children.
+        let hub = stop_line(&content, "NSR:StopPlace:59650");
+        assert!(hub.contains("\"fare_zones\":\"RUT:FareZone:4;RUT:FareZone:99\""), "got: {hub}");
+        let _ = std::fs::remove_file(&output);
+    }
+
+    #[test]
+    fn multimodal_parent_inherits_its_children_fare_zones() {
+        let config = test_config();
+        let input = test_data_path("stopPlaces.xml");
+        let output = std::env::temp_dir().join("test_convert_parent_zones.ndjson");
+        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty()).unwrap();
+        let content = std::fs::read_to_string(&output).unwrap();
+
+        // RUT:FareZone:13 scopes to explicit stops and lists only the child 59649, so the hub
+        // can hold it by inheritance alone. Its own outline match is RUT:FareZone:4.
+        let hub = stop_line(&content, "NSR:StopPlace:59650");
+        assert!(hub.contains("\"fare_zones\":\"RUT:FareZone:13;RUT:FareZone:4\""), "got: {hub}");
+        assert!(hub.contains("fare_zone_id.RUT.FareZone.13"));
+
+        // Downward only: 59649 must not pick up sibling 305's zones through the parent.
+        let sibling = stop_line(&content, "NSR:StopPlace:59649");
+        assert!(!sibling.contains("FareZone:99"), "got: {sibling}");
         let _ = std::fs::remove_file(&output);
     }
 
