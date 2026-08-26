@@ -418,10 +418,10 @@ fn run_build(args: BuildArgs, opts: RunOptions) -> Result<(), Box<dyn std::error
 
     // Smallest and flakiest input, so resolve it before the multi-GB downloads. Its export
     // changes a few times a month, hence the longer staleness threshold.
-    let fare_zones_resolved = match cfg.stop_place.as_ref() {
-        Some(sp) => {
+    let fare_zones_resolved = match cfg.stop_place.as_ref().and_then(|sp| sp.fare_zones.as_ref()) {
+        Some(fz) => {
             let slow = RunOptions { stale_after: opts.stale_after.map(|d| d.saturating_mul(30)), ..opts };
-            Some(resolve_source(&sp.fare_zones.input, "farezones", None, slow)?)
+            Some(resolve_source(&fz.input, "farezones", None, slow)?)
         }
         None => None,
     };

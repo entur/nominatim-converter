@@ -80,9 +80,9 @@ Stop place fare zones come from their own NeTEx export, not from the stop place 
 }
 ```
 
-`fareZones` is required whenever `stopPlace` is present - without it every zone filter
-downstream returns nothing, and nothing else in the pipeline can detect that. The `stopplace`
-subcommand takes the same file via `--fare-zones` (optional there, for ad-hoc runs). See
+`fareZones` is optional, but any real build should set it: without it every zone filter
+downstream returns nothing, and nothing else in the pipeline can detect that beyond the warning
+the run prints. The `stopplace` subcommand takes the same file via `--fare-zones`. See
 AGENTS.md for how stop membership is derived.
 
 ### Single-source subcommands (local files)

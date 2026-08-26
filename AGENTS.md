@@ -61,8 +61,8 @@ GoSP IDs listed in `stopPlace.groupOfStopPlaces.secondaryGosps` are demoted in a
 
 Fare zones are **not** read from the stop place NeTEx. Their source is
 `https://api.entur.io/distance/netex/fare-zones` (the Distances and zones API, an open
-endpoint that 302s to a signed GCS URL), configured as the required `stopPlace.fareZones.input`
-for `build`, or passed as `--fare-zones` to the `stopplace` subcommand. NSR still mirrors fare
+endpoint that 302s to a signed GCS URL), configured as `stopPlace.fareZones.input` for `build`,
+or passed as `--fare-zones` to the `stopplace` subcommand. NSR still mirrors fare
 zones into each stop's `<tariffZones>` as `:FareZone:`-shaped refs; those are dropped
 (`tariff_zone_refs` in `src/source/stopplace/convert.rs`) and are due to disappear from the NSR
 export anyway. Tariff zones still come from NSR - they are being retired too, but they cannot be
@@ -84,8 +84,9 @@ Checked against NSR's own assignment: one stop differs, where NSR held a stale z
 
 Silent degradation is the risk that shapes the error handling here, because a zone-less index
 looks healthy to every downstream check (`minLines` counts stop places, which are unaffected).
-So: a missing `fareZones` config key is a parse error, an export that yields zero zones is a
-hard error, and a truncated download fails on the content-length check in `common::input`.
+So: a missing `fareZones` config key warns on stderr (it parses - zone-less builds are a
+supported ad-hoc case), an export that yields zero zones is a hard error, and a truncated
+download fails on the content-length check in `common::input`.
 Malformed geometry fails rather than degrades - an odd or unparsable `posList` would re-pair
 every coordinate, and a second outline would silently shrink a zone to one part.
 

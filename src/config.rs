@@ -148,14 +148,16 @@ pub struct StopPlaceConfig {
     /// only this converter consumes them, so their config lives here. Defaults when omitted.
     #[serde(default)]
     pub group_of_stop_places: GroupOfStopPlacesConfig,
-    pub fare_zones: FareZonesConfig,
+    /// Omit to build without fare zones; the run then warns and every zone filter is empty.
+    #[serde(default)]
+    pub fare_zones: Option<FareZonesConfig>,
     #[serde(default)]
     pub min_lines: Option<usize>,
 }
 
 /// The fare zone NeTEx export (`https://api.entur.io/distance/netex/fare-zones`), the sole
-/// source of fare zones and a required second input: a stop place import without it is a
-/// full-size index whose zone filters all return nothing.
+/// source of fare zones. Optional, but leaving it out yields a full-size index whose zone
+/// filters all return nothing, so any real build should set it.
 #[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct FareZonesConfig {
@@ -268,6 +270,15 @@ mod tests {
         assert_eq!(sp.default_value, 50);
         assert_eq!(*sp.stop_type_factors.get("busStation").unwrap(), 2.0);
         assert_eq!(*sp.interchange_factors.get("preferredInterchange").unwrap(), 10.0);
+    }
+
+    #[test]
+    fn test_config_fare_zones_optional() {
+        let sp: StopPlaceConfig = serde_json::from_str(
+            r#"{ "input": { "file": "x.zip" }, "defaultValue": 50, "rankAddress": 30,
+                 "stopTypeFactors": {}, "interchangeFactors": {} }"#,
+        ).unwrap();
+        assert!(sp.fare_zones.is_none());
     }
 
     #[test]
