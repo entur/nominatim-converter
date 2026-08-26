@@ -63,9 +63,13 @@ Fare zones are **not** read from the stop place NeTEx. Their source is
 `https://api.entur.io/distance/netex/fare-zones` (the Distances and zones API, an open
 endpoint that 302s to a signed GCS URL), configured as `stopPlace.fareZones.input` for `build`,
 or passed as `--fare-zones` to the `stopplace` subcommand. NSR still mirrors fare
-zones into each stop's `<tariffZones>` as `:FareZone:`-shaped refs; those are dropped
-(`tariff_zone_refs` in `src/source/stopplace/convert.rs`) and are due to disappear from the NSR
-export anyway. Tariff zones still come from NSR - they are being retired too, but they cannot be
+zones into each stop's `<tariffZones>` as `:FareZone:`-shaped refs; with an export loaded those
+are ignored (`tariff_zone_refs` in `src/source/stopplace/convert.rs`), since they are due to
+disappear from the NSR export anyway. Without one they are the fallback: `stop_fare_zones` takes
+the mirrored refs verbatim as fare zone IDs, minus authorities, which NSR doesn't carry and
+which can't be derived from the zone prefix (`FIN:FareZone:31` belongs to `FIN:Authority:FIN_ID`).
+The choice is per run, not per stop - once an export is loaded it is authoritative, so a stop it
+places in no zone stays zone-less. Tariff zones still come from NSR - they are being retired too, but they cannot be
 derived from fare zones: the two systems disagree on membership for ~12k stops, and a handful of
 tariff zones have no fare zone counterpart.
 
@@ -84,9 +88,9 @@ Checked against NSR's own assignment: one stop differs, where NSR held a stale z
 
 Silent degradation is the risk that shapes the error handling here, because a zone-less index
 looks healthy to every downstream check (`minLines` counts stop places, which are unaffected).
-So: a missing `fareZones` config key warns on stderr (it parses - zone-less builds are a
-supported ad-hoc case), an export that yields zero zones is a hard error, and a truncated
-download fails on the content-length check in `common::input`.
+So: a missing `fareZones` config key warns on stderr and falls back to NSR's refs, an export
+that yields zero zones is a hard error, and a truncated download fails on the content-length
+check in `common::input`.
 Malformed geometry fails rather than degrades - an odd or unparsable `posList` would re-pair
 every coordinate, and a second outline would silently shrink a zone to one part.
 

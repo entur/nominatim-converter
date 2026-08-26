@@ -80,10 +80,11 @@ Stop place fare zones come from their own NeTEx export, not from the stop place 
 }
 ```
 
-`fareZones` is optional, but any real build should set it: without it every zone filter
-downstream returns nothing, and nothing else in the pipeline can detect that beyond the warning
-the run prints. The `stopplace` subcommand takes the same file via `--fare-zones`. See
-AGENTS.md for how stop membership is derived.
+`fareZones` is optional. Leave it out and the converter falls back to the `:FareZone:` refs NSR
+mirrors into each stop. Those matched the export on all but one stop at the last check, but
+carry no authority (so `fareZoneAuthorities` filters match nothing) and are due to disappear
+from the NSR export, so any real build should set `fareZones`. The `stopplace` subcommand takes the same file via `--fare-zones`. See AGENTS.md for how
+stop membership is derived.
 
 ### Single-source subcommands (local files)
 

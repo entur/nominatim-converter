@@ -29,7 +29,7 @@ const SECONDARY_GOSP_IMPORTANCE: f64 = 0.001;
 /// the viable band is tight (~0.88-0.96), so re-check the `oslo`/`olso` acceptance tests if changed.
 const GOSP_IMPORTANCE_CAP: f64 = 0.92;
 
-use super::farezone::{FareZone, FareZones};
+use super::farezone::FareZones;
 use super::popularity::calculate_stop_popularity;
 use super::xml::*;
 
@@ -128,7 +128,7 @@ pub fn convert_all(
 
 fn load_fare_zones(input: Option<&Path>) -> Result<FareZones, Box<dyn std::error::Error>> {
     let Some(path) = input else {
-        eprintln!("warning: no fare zone input; stop places get no fare zone data");
+        eprintln!("warning: no fare zone input; falling back to NSR's mirrored :FareZone: refs");
         return Ok(FareZones::empty());
     };
     let zones = FareZones::load(path)?;
@@ -212,7 +212,7 @@ pub(crate) fn convert_stop_place(
         .chain(sp.stop_place_type.iter().cloned())
         .collect();
 
-    let zones = fare_zones.zones_for(&sp.id, &coord);
+    let zones = stop_fare_zones(sp, &coord, fare_zones);
 
     let StopCategories { visible: visible_cats, indexed: indexed_cats } = build_stop_categories(
         sp, &role, &inferred_types, &country, &geography, &zones,
@@ -306,7 +306,7 @@ fn build_stop_categories(
     inferred_types: &[String],
     country: &Country,
     geography: &StopGeography,
-    fare_zones: &[&FareZone],
+    fare_zones: &StopFareZones,
 ) -> StopCategories {
     let source_cat = match role {
         StopPlaceRole::Parent => LEGACY_SOURCE_OPENSTREETMAP,
@@ -354,13 +354,13 @@ fn build_stop_categories(
 fn append_zone_categories(
     indexed_cats: &mut Vec<String>,
     sp: &StopPlaceXml,
-    fare_zones: &[&FareZone],
+    fare_zones: &StopFareZones,
 ) {
     for ref_ in tariff_zone_refs(sp) {
         indexed_cats.push(tariff_zone_id_category(ref_));
     }
-    for zone in fare_zones {
-        indexed_cats.push(fare_zone_id_category(&zone.id));
+    for id in &fare_zones.ids {
+        indexed_cats.push(fare_zone_id_category(id));
     }
     // Zone refs follow the pattern "AUTHORITY:TariffZone:NUMBER", so the authority
     // is the prefix before the first colon.
@@ -374,7 +374,7 @@ fn append_zone_categories(
         }
     }
     let mut seen_fz_auth = HashSet::new();
-    for auth_ref in fare_zones.iter().filter_map(|z| z.authority.as_deref()) {
+    for auth_ref in &fare_zones.authorities {
         let cat = fare_zone_authority_category(auth_ref);
         if seen_fz_auth.insert(cat.clone()) {
             indexed_cats.push(cat);
@@ -382,13 +382,45 @@ fn append_zone_categories(
     }
 }
 
-/// The stop's `:TariffZone:`-shaped refs. NSR's mirrored `:FareZone:` refs are dropped; the
-/// export is the source for those.
+/// The stop's `:TariffZone:`-shaped refs. NSR's mirrored `:FareZone:` refs are not tariff zones.
 fn tariff_zone_refs(sp: &StopPlaceXml) -> impl Iterator<Item = &str> {
+    zone_refs(sp).filter(|ref_| !ref_.contains(":FareZone:"))
+}
+
+/// NSR's mirrored `:FareZone:` refs, used only when no export is configured.
+fn nsr_fare_zone_refs(sp: &StopPlaceXml) -> impl Iterator<Item = &str> {
+    zone_refs(sp).filter(|ref_| ref_.contains(":FareZone:"))
+}
+
+fn zone_refs(sp: &StopPlaceXml) -> impl Iterator<Item = &str> {
     sp.tariff_zones.iter()
         .flat_map(|tz| tz.refs.iter())
         .filter_map(|r| r.ref_.as_deref())
-        .filter(|ref_| !ref_.contains(":FareZone:"))
+}
+
+/// One stop's fare zones.
+struct StopFareZones {
+    ids: Vec<String>,
+    /// Authority refs (`RUT:Authority:RUT`), export-only: NSR's mirrored refs carry no
+    /// authority, and it can't be derived from the zone prefix (`FIN:FareZone:31` ->
+    /// `FIN:Authority:FIN_ID`).
+    authorities: Vec<String>,
+}
+
+/// The export when one is loaded, else NSR's mirrored refs. Per-collection, not per-stop: a
+/// loaded export is authoritative, so a stop it places in no zone stays zone-less.
+fn stop_fare_zones(sp: &StopPlaceXml, coord: &Coordinate, fare_zones: &FareZones) -> StopFareZones {
+    if fare_zones.is_empty() {
+        return StopFareZones {
+            ids: nsr_fare_zone_refs(sp).map(String::from).collect(),
+            authorities: Vec::new(),
+        };
+    }
+    let zones = fare_zones.zones_for(&sp.id, coord);
+    StopFareZones {
+        ids: zones.iter().map(|z| z.id.clone()).collect(),
+        authorities: zones.iter().filter_map(|z| z.authority.clone()).collect(),
+    }
 }
 
 /// Indexed alt names: the stop's own alternative names plus, for a multimodal parent, each
@@ -415,12 +447,11 @@ fn build_stop_extra(
     visible_cats: &[String],
     inferred_types: &[String],
     child_stops: &[&StopPlaceXml],
-    fare_zones: &[&FareZone],
+    fare_zones: &StopFareZones,
 ) -> Extra {
     let stop_place_role = role.as_str();
     let tariff_refs: Vec<String> = tariff_zone_refs(sp).map(String::from).collect();
-    let fare_refs: Vec<String> = fare_zones.iter().map(|z| z.id.clone()).collect();
-    let (tariff_zone_list, fare_zone_list) = (join_osm_values(&tariff_refs), join_osm_values(&fare_refs));
+    let (tariff_zone_list, fare_zone_list) = (join_osm_values(&tariff_refs), join_osm_values(&fare_zones.ids));
 
     let description = sp.description.as_ref()
         .filter(|d| !d.is_empty())
@@ -1282,6 +1313,22 @@ mod tests {
         let content = std::fs::read_to_string(&output).unwrap();
         assert!(content.contains("fare_zone_authority.FIN.Authority.FIN_ID"));
         assert!(content.contains("fare_zone_authority.RUT.Authority.RUT"));
+        let _ = std::fs::remove_file(&output);
+    }
+
+    #[test]
+    fn without_an_export_fare_zones_fall_back_to_nsr_refs() {
+        let config = test_config();
+        let input = test_data_path("stopPlaces.xml");
+        let output = std::env::temp_dir().join("test_convert_fare_zone_fallback.ndjson");
+        convert_all(&config, &input, &output, false, None, &UsageBoost::empty()).unwrap();
+        let content = std::fs::read_to_string(&output).unwrap();
+        // RUT:FareZone:99 exists only as an NSR ref, so it proves the fallback ran.
+        assert!(content.contains("fare_zone_id.RUT.FareZone.99"));
+        assert!(content.contains("\"fare_zones\":\"RUT:FareZone:99\""), "extra field too, not just categories");
+        // Still not tariff zones, and NSR refs carry no authority.
+        assert!(!content.contains("tariff_zone_id.RUT.FareZone"));
+        assert!(!content.contains("fare_zone_authority."));
         let _ = std::fs::remove_file(&output);
     }
 

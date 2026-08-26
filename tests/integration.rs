@@ -307,11 +307,13 @@ fn stopplace_fare_zones_flag_adds_zone_categories() {
 }
 
 #[test]
-fn stopplace_without_fare_zones_flag_has_no_fare_zones() {
+fn stopplace_without_fare_zones_flag_falls_back_to_nsr_refs() {
     let (success, stderr, output) = convert_fixture("stopplace", "stopPlaces.xml", "stopplace-no-fare-zones");
     assert!(success, "stopplace failed: {stderr}");
     let content = std::fs::read_to_string(&output).unwrap();
-    assert!(!content.contains("fare_zone_id."), "fare zones without -z");
+    // RUT:FareZone:99 exists only as an NSR ref, never in the export.
+    assert!(content.contains("fare_zone_id.RUT.FareZone.99"), "expected NSR fare zone refs");
+    assert!(!content.contains("fare_zone_authority."), "NSR refs carry no authority");
     assert!(content.contains("tariff_zone_id."), "tariff zones come from the stop place input");
     cleanup(&output);
 }
