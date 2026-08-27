@@ -207,7 +207,7 @@ fn parse_pos_list(text: &str, zone_id: &str) -> Result<Vec<Coordinate>, Box<dyn 
     if nums.len() % 2 != 0 {
         return Err(format!("fare zone {zone_id} outline has {} values, expected lat/lon pairs", nums.len()).into());
     }
-    Ok(nums.chunks_exact(2).map(|p| Coordinate::new(p[0], p[1])).collect())
+    Ok(nums.as_chunks::<2>().0.iter().map(|p| Coordinate::new(p[0], p[1])).collect())
 }
 
 #[cfg(test)]
