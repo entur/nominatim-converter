@@ -1,0 +1,70 @@
+# publiccode.yml metadata, see https://yml.publiccode.tools/
+publiccodeYmlVersion: "0.7.0"
+
+name: nominatim-converter
+url: https://github.com/entur/nominatim-converter
+softwareVersion: 0.8.2
+releaseDate: 2026-08-27
+
+platforms:
+  - linux
+  - mac
+
+categories:
+  - geographic-information-systems
+  - data-collection
+
+developmentStatus: stable
+softwareType: standalone/other
+
+organisation:
+  name: Entur AS
+  uri: https://entur.no
+
+usedBy:
+  - Norway (nationwide), Entur AS
+
+intendedAudience:
+  scope:
+    - transportation
+  countries:
+    - NO
+
+description:
+  en:
+    localisedName: nominatim-converter
+    shortDescription: Turns national geodata into a single Nominatim-compatible
+      NDJSON dump that Photon can index.
+    longDescription: >
+      The data half of Entur's geocoder. Reads NeTEx stop places, Kartverket's
+      address and place name registries, points of interest and OpenStreetMap
+      extracts, and writes a Nominatim-compatible NDJSON dump that Photon
+      indexes directly. One Rust binary, no database and no Nominatim install.
+    documentation: https://github.com/entur/nominatim-converter#readme
+    features:
+      - NeTEx stop places and groups of stop places, with fare zones
+      - Kartverket address registry (matrikkelen) and place names (SSR)
+      - Points of interest from NeTEx
+      - OpenStreetMap nodes, ways and relations from PBF extracts
+      - Swedish addresses from Lantmäteriet GeoPackage
+      - Importance weighting that drives search ranking
+
+legal:
+  license: EUPL-1.2
+  mainCopyrightOwner: Entur AS
+
+maintenance:
+  type: internal
+  contacts:
+    - name: Entur ROR (Open Data and Journey Planning)
+      email: kollektivdata@entur.org
+
+localisation:
+  localisationReady: false
+  availableLanguages:
+    - en
+
+dependsOn:
+  open:
+    - name: Photon
+      optional: true
