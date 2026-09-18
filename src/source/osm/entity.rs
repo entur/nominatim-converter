@@ -230,6 +230,7 @@ impl<'a> OsmEntityConverter<'a> {
             street,
             city: locality.clone(),
             county: county_name,
+            ..Default::default()
         };
 
         let extra = build_extra(

@@ -134,6 +134,7 @@ fn convert_address(
                 } else {
                     None
                 },
+                ..Default::default()
             },
             postcode: addr.postnummer.clone(),
             country_code: Some(country.alpha2.clone()),
@@ -210,6 +211,7 @@ fn convert_street(
                 street: Some(street_name),
                 city: Some(titleize(postort)),
                 county: addr.kommunnamn.as_deref().map(titleize),
+                ..Default::default()
             },
             postcode: None,
             country_code: Some(country.alpha2.clone()),

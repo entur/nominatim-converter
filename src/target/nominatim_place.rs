@@ -1,5 +1,6 @@
 use crate::common::extra::Extra;
 use serde::{Serialize, Serializer};
+use std::collections::BTreeMap;
 
 /// A pre-formatted JSON number. Serializes as raw JSON (no quoting).
 #[derive(Debug)]
@@ -79,6 +80,17 @@ pub struct Address {
     pub city: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub county: Option<String>,
+    /// Extra `other1`, `other2`, ... keys, which Photon routes to a document's context. Context
+    /// reaches only `collector.all`, so it adds score to a document already matched by its own
+    /// name; a name also reaches `collector.name`, which is what the short-query path searches.
+    /// Flattened, so the keys must serialize as siblings of `street`/`city`/`county`, not nested.
+    #[serde(flatten)]
+    pub other: BTreeMap<String, String>,
+}
+
+/// Number the values as Photon's `other1`, `other2`, ... address keys.
+pub fn other_address_keys(values: &[String]) -> BTreeMap<String, String> {
+    values.iter().enumerate().map(|(i, v)| (format!("other{}", i + 1), v.clone())).collect()
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -160,9 +172,8 @@ mod tests {
                     alt_name: None,
                 }),
                 address: Address {
-                    street: None,
                     city: Some("Oslo".to_string()),
-                    county: None,
+                    ..Default::default()
                 },
                 housenumber: None,
                 postcode: Some("0001".to_string()),
@@ -193,7 +204,7 @@ mod tests {
             importance: RawNumber::from_f64_6dp(0.230103),
             parent_place_id: None,
             name: None,
-            address: Address { street: None, city: None, county: None },
+            address: Address::default(),
             housenumber: None,
             postcode: None,
             country_code: None,
@@ -228,5 +239,24 @@ mod tests {
         assert!(json.contains("\"type\":\"NominatimDumpFile\""));
         assert!(json.contains("\"generator\":\"geocoder\""));
         assert!(json.contains("\"sorted_by_country\":true"));
+    }
+
+    #[test]
+    fn other_address_keys_serialize_as_siblings_not_nested() {
+        // Photon only reads `other*` at the top of the address object (`PhotonDoc.addAddresses`),
+        // so losing the flatten would drop every group's member names without failing a test.
+        let address = Address {
+            city: Some("Oslo".to_string()),
+            other: other_address_keys(&["Oslo S".to_string(), "Jernbanetorget".to_string()]),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&address).unwrap();
+        assert_eq!(json, r#"{"city":"Oslo","other1":"Oslo S","other2":"Jernbanetorget"}"#);
+    }
+
+    #[test]
+    fn empty_other_serializes_no_keys() {
+        let json = serde_json::to_string(&Address { city: Some("Oslo".to_string()), ..Default::default() }).unwrap();
+        assert_eq!(json, r#"{"city":"Oslo"}"#);
     }
 }

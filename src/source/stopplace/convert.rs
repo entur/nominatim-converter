@@ -605,7 +605,12 @@ pub(crate) fn convert_gosp(
     let rank_address = if is_secondary { 0 } else { stop_place.group_of_stop_places.rank_address };
 
     // Only member names, not their alternative names: a group's importance beats any member's,
-    // so an inherited alias makes the group outrank the stop that actually carries it.
+    // so an inherited alias makes the group outrank the stop that actually carries it. They go in
+    // context (`other1`, `other2`, ...) rather than alt_name because `SearchQueryBuilder`'s
+    // short-query path searches `collector.name`, where a word many members share
+    // ("bussterminal", "stasjon") filled the results with groups. Every Norwegian group is named
+    // after its locality and its members carry that name, so "oslo s" still reaches the group
+    // through its own name, with the member names in context adding score.
     let mut member_names: Vec<String> = gosp.members.as_ref()
         .map(|m| m.refs.iter()
             .filter_map(|r| stop_by_id.get(r.ref_.as_str()).copied())
@@ -649,9 +654,14 @@ pub(crate) fn convert_gosp(
             name: Some(Name {
                 name: Some(group_name.to_string()),
                 name_en: None,
-                alt_name: join_osm_values(&member_names),
+                alt_name: None,
             }),
-            address: Address { city: locality.clone(), county: county.clone(), ..Default::default() },
+            address: Address {
+                city: locality.clone(),
+                county: county.clone(),
+                other: other_address_keys(&member_names),
+                ..Default::default()
+            },
             housenumber: None,
             postcode: None,
             country_code: Some(country.alpha2.clone()),
@@ -1083,7 +1093,7 @@ mod tests {
     }
 
     #[test]
-    fn gosp_alt_name_contains_member_stop_names_not_id() {
+    fn gosp_context_contains_member_stop_names_not_id() {
         let config = test_config();
         let importance_calc = ImportanceCalculator::new(&EMPTY_USAGE);
 
@@ -1111,14 +1121,15 @@ mod tests {
             &HashMap::new(), &stop_by_id, false,
         ).unwrap();
 
-        let alt_name = result.content[0].name.as_ref().unwrap().alt_name.as_deref().unwrap_or("");
-        assert!(alt_name.contains("Oslo S"), "alt_name should include member 'Oslo S': {alt_name}");
-        assert!(alt_name.contains("Oslo Bussterminal"), "alt_name should include member 'Oslo Bussterminal': {alt_name}");
-        assert!(!alt_name.contains("NSR:GroupOfStopPlaces:1"), "alt_name must not contain the GoSP id: {alt_name}");
+        let other = &result.content[0].address.other;
+        let members: Vec<&str> = other.values().map(String::as_str).collect();
+        assert_eq!(members, vec!["Oslo S", "Oslo Bussterminal"]);
+        assert_eq!(other.keys().collect::<Vec<_>>(), vec!["other1", "other2"]);
+        assert_eq!(result.content[0].name.as_ref().unwrap().alt_name, None);
     }
 
     #[test]
-    fn gosp_alt_name_excludes_member_alt_names() {
+    fn gosp_context_excludes_member_alt_names() {
         // Deliberate: inheriting "Oslo Sentralstasjon" would make the 0.92-importance group
         // outrank Oslo S itself on that query. Unlike a multimodal parent's children, members
         // are never hidden by the proxy's multimodal=parent filter, so there is nothing to fix.
@@ -1145,8 +1156,9 @@ mod tests {
             &HashMap::new(), &stop_by_id, false,
         ).unwrap();
 
-        let alt_name = result.content[0].name.as_ref().unwrap().alt_name.as_deref();
-        assert_eq!(alt_name, Some("Oslo S"));
+        let members: Vec<&str> =
+            result.content[0].address.other.values().map(String::as_str).collect();
+        assert_eq!(members, vec!["Oslo S"], "member alt names must not be inherited");
     }
 
     #[test]

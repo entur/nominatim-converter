@@ -152,6 +152,7 @@ fn convert_address(
                 street: addr.adressenavn.clone(),
                 city: Some(titleize(&addr.poststed)),
                 county: fylkesnavn,
+                ..Default::default()
             },
             postcode: addr.postnummer.clone(),
             country_code: Some(country.alpha2.clone()),
@@ -239,6 +240,7 @@ fn convert_street(
                 street: addr.adressenavn.clone(),
                 city: Some(titleize(&addr.poststed)),
                 county: fylkesnavn,
+                ..Default::default()
             },
             postcode: None,
             country_code: Some(country.alpha2.clone()),
