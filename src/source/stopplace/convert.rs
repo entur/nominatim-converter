@@ -59,14 +59,12 @@ pub fn convert_all(
     let zone_source = ZoneSource::resolve(fare_zone_input, &result)?;
     let importance_calc = ImportanceCalculator::new(usage);
 
-    // Build child stop types map (parentRef -> list of child stopPlaceTypes)
-    let mut stop_place_types: HashMap<String, Vec<String>> = HashMap::new();
+    // Build child stops map (parentRef -> child stop places, in document order). A parent's own
+    // types, weighting and names are all derived from it.
+    let mut child_stops: HashMap<String, Vec<&StopPlaceXml>> = HashMap::new();
     for sp in &result.stop_places {
-        if let (Some(parent_ref), Some(sp_type)) = (&sp.parent_site_ref, &sp.stop_place_type) {
-            stop_place_types
-                .entry(parent_ref.ref_.clone())
-                .or_default()
-                .push(sp_type.clone());
+        if let Some(parent_ref) = &sp.parent_site_ref {
+            child_stops.entry(parent_ref.ref_.clone()).or_default().push(sp);
         }
     }
 
@@ -75,30 +73,21 @@ pub fn convert_all(
     // `convert_gosp` additionally applies the group's own usage entry, so GoSP
     // ranking survives single-member churn in the stop place register.
     let stop_popularities: HashMap<String, i64> = result.stop_places.iter().map(|sp| {
-        let child_types = stop_place_types.get(&sp.id).cloned().unwrap_or_default();
-        let pop = calculate_stop_popularity(stop_place, sp, &child_types, usage.factor(&sp.id));
+        let children = child_stops.get(&sp.id).map(Vec::as_slice).unwrap_or_default();
+        let pop = calculate_stop_popularity(stop_place, sp, children, usage.factor(&sp.id));
         (sp.id.clone(), pop)
     }).collect();
-
-    // Build child stops map (parentRef -> child stop places, in document order).
-    // Child names are derived from this map where needed.
-    let mut child_stops: HashMap<String, Vec<&StopPlaceXml>> = HashMap::new();
-    for sp in &result.stop_places {
-        if let Some(parent_ref) = &sp.parent_site_ref {
-            child_stops.entry(parent_ref.ref_.clone()).or_default().push(sp);
-        }
-    }
 
     let mut entries = Vec::new();
 
     // Convert stop places
     for sp in &result.stop_places {
         let pop = stop_popularities.get(&sp.id).copied().unwrap_or(0);
-        let my_child_stops = child_stops.get(&sp.id).cloned().unwrap_or_default();
+        let children = child_stops.get(&sp.id).map(Vec::as_slice).unwrap_or_default();
 
         if let Some(entry) = convert_stop_place(
             stop_place, &importance_calc, sp, &result.topo_places,
-            &stop_place_types, &zone_source, pop, &my_child_stops,
+            &zone_source, pop, children,
         ) {
             entries.push(entry);
         }
@@ -258,7 +247,6 @@ pub(crate) fn convert_stop_place(
     importance_calc: &ImportanceCalculator,
     sp: &StopPlaceXml,
     topo_places: &HashMap<String, TopographicPlaceXml>,
-    stop_place_types: &HashMap<String, Vec<String>>,
     zone_source: &ZoneSource,
     popularity: i64,
     child_stops: &[&StopPlaceXml],
@@ -269,7 +257,8 @@ pub(crate) fn convert_stop_place(
 
     let geography = resolve_stop_geography(sp, topo_places);
     let country = determine_country(topo_places, sp, &coord);
-    let child_types = stop_place_types.get(&sp.id).cloned().unwrap_or_default();
+    let child_types: Vec<&str> =
+        child_stops.iter().filter_map(|c| c.stop_place_type.as_deref()).collect();
     let importance = RawNumber::from_f64_6dp(apply_foreign_penalty(
         importance_calc.calculate_importance(popularity as f64),
         &country,
@@ -279,7 +268,7 @@ pub(crate) fn convert_stop_place(
 
     let inferred_types: Vec<String> = child_types
         .iter()
-        .cloned()
+        .map(|t| t.to_string())
         .chain(sp.stop_place_type.iter().cloned())
         .collect();
 
@@ -328,7 +317,7 @@ pub(crate) fn convert_stop_place(
 
 /// Determine role: has children → Parent, else references a parent → Child, else Standalone.
 /// Children win over a parent ref; NSR's hierarchy is single-level, so a node shouldn't be both.
-fn classify_role(child_types: &[String], has_parent: bool) -> StopPlaceRole {
+fn classify_role(child_types: &[&str], has_parent: bool) -> StopPlaceRole {
     if !child_types.is_empty() {
         StopPlaceRole::Parent
     } else if has_parent {
@@ -940,7 +929,7 @@ mod tests {
         ]);
         let result = convert_stop_place(
             config.stop_place.as_ref().unwrap(), &importance_calc, &parent, &HashMap::new(),
-            &HashMap::new(), &no_zones(), 50, &[&child_rail, &child_tram],
+            &no_zones(), 50, &[&child_rail, &child_tram],
         ).unwrap();
         // Trailing "Nationaltheatret" is the tram child's name: child names are only deduped,
         // not filtered against the parent's name.
@@ -959,7 +948,7 @@ mod tests {
         let sp = make_stop_place("NSR:StopPlace:1", "Test", Some("funicular"), Some("other"));
         let result = convert_stop_place(
             config.stop_place.as_ref().unwrap(), &importance_calc, &sp, &HashMap::new(),
-            &HashMap::new(), &no_zones(), 50, &[],
+            &no_zones(), 50, &[],
         ).unwrap();
         let cats = &result.content[0].categories;
         assert!(cats.iter().any(|c| c == "legacy.category.funicular"));
@@ -973,7 +962,7 @@ mod tests {
         let sp = make_stop_place("NSR:StopPlace:1", "Test", Some("bus"), Some("onstreetBus"));
         let result = convert_stop_place(
             config.stop_place.as_ref().unwrap(), &importance_calc, &sp, &HashMap::new(),
-            &HashMap::new(), &no_zones(), 50, &[],
+            &no_zones(), 50, &[],
         ).unwrap();
         let cats = &result.content[0].categories;
         assert!(!cats.iter().any(|c| c == "legacy.category.bus"));
@@ -987,7 +976,7 @@ mod tests {
         let sp = make_stop_place("NSR:StopPlace:1", "Test", Some("rail"), Some("railStation"));
         let result = convert_stop_place(
             config.stop_place.as_ref().unwrap(), &importance_calc, &sp, &HashMap::new(),
-            &HashMap::new(), &no_zones(), 50, &[],
+            &no_zones(), 50, &[],
         ).unwrap();
         let cats = &result.content[0].categories;
         assert!(cats.iter().any(|c| c == "stop_place_type.railStation"), "{cats:?}");
@@ -998,12 +987,12 @@ mod tests {
         let config = test_config();
         let importance_calc = ImportanceCalculator::new(&EMPTY_USAGE);
         let sp = make_stop_place("NSR:StopPlace:Parent", "Hub", Some("funicular"), Some("other"));
-        let mut child_types_map: HashMap<String, Vec<String>> = HashMap::new();
-        child_types_map.insert("NSR:StopPlace:Parent".to_string(),
-            vec!["onstreetBus".to_string(), "railStation".to_string(), "metroStation".to_string()]);
+        let bus = make_stop_place("NSR:StopPlace:C1", "Bus", None, Some("onstreetBus"));
+        let rail = make_stop_place("NSR:StopPlace:C2", "Rail", None, Some("railStation"));
+        let metro = make_stop_place("NSR:StopPlace:C3", "Metro", None, Some("metroStation"));
         let result = convert_stop_place(
             config.stop_place.as_ref().unwrap(), &importance_calc, &sp, &HashMap::new(),
-            &child_types_map, &no_zones(), 50, &[],
+            &no_zones(), 50, &[&bus, &rail, &metro],
         ).unwrap();
         let cats = &result.content[0].categories;
         assert!(cats.iter().any(|c| c == "legacy.category.funicular"));
@@ -1028,7 +1017,7 @@ mod tests {
         let standalone = make_stop_place("NSR:StopPlace:Solo", "Solo", Some("bus"), Some("onstreetBus"));
         let res = convert_stop_place(
             config.stop_place.as_ref().unwrap(), &importance_calc, &standalone, &HashMap::new(),
-            &HashMap::new(), &no_zones(), 50, &[],
+            &no_zones(), 50, &[],
         ).unwrap();
         assert_eq!(res.content[0].extra.stop_place_role.as_deref(), Some("standalone"));
 
@@ -1037,18 +1026,17 @@ mod tests {
         child.parent_site_ref = Some(RefAttr { ref_: "NSR:StopPlace:Parent".to_string() });
         let res = convert_stop_place(
             config.stop_place.as_ref().unwrap(), &importance_calc, &child, &HashMap::new(),
-            &HashMap::new(), &no_zones(), 50, &[],
+            &no_zones(), 50, &[],
         ).unwrap();
         assert_eq!(res.content[0].extra.stop_place_role.as_deref(), Some("child"));
 
         // Children win over a parent ref (not expected in NSR, but pinned).
         let mut both = make_stop_place("NSR:StopPlace:Both", "Both", Some("bus"), Some("onstreetBus"));
         both.parent_site_ref = Some(RefAttr { ref_: "NSR:StopPlace:Grandparent".to_string() });
-        let mut child_types = HashMap::new();
-        child_types.insert("NSR:StopPlace:Both".to_string(), vec!["onstreetBus".to_string()]);
+        let bus_child = make_stop_place("NSR:StopPlace:C1", "Bus", None, Some("onstreetBus"));
         let res = convert_stop_place(
             config.stop_place.as_ref().unwrap(), &importance_calc, &both, &HashMap::new(),
-            &child_types, &no_zones(), 50, &[],
+            &no_zones(), 50, &[&bus_child],
         ).unwrap();
         assert_eq!(res.content[0].extra.stop_place_role.as_deref(), Some("parent"));
     }
