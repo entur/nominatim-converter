@@ -9,7 +9,7 @@ use crate::config::{Config, PoiConfig};
 use crate::target::json_writer::JsonWriter;
 use crate::target::nominatim_id::as_place_id;
 use crate::target::nominatim_place::*;
-use chrono::{Local, NaiveDateTime};
+use chrono::{DateTime, Local, NaiveDateTime};
 use std::path::Path;
 
 use super::xml::*;
@@ -42,13 +42,18 @@ pub fn convert_all(
 /// Throughout, "missing means valid": an absent or unusable bound never excludes a POI.
 fn is_valid(tp: &TopographicPlaceXml, now: &NaiveDateTime) -> bool {
     let Some(vb) = &tp.valid_between else { return true };
-    let from_ok = vb.from_date.as_ref().is_none_or(|d| {
-        NaiveDateTime::parse_from_str(d, "%Y-%m-%dT%H:%M:%S").ok().is_none_or(|dt| *now >= dt)
-    });
-    let to_ok = vb.to_date.as_ref().is_none_or(|d| {
-        NaiveDateTime::parse_from_str(d, "%Y-%m-%dT%H:%M:%S").ok().is_none_or(|dt| *now <= dt)
-    });
+    let from_ok = vb.from_date.as_deref().and_then(parse_xs_date_time).is_none_or(|dt| *now >= dt);
+    let to_ok = vb.to_date.as_deref().and_then(parse_xs_date_time).is_none_or(|dt| *now <= dt);
     from_ok && to_ok
+}
+
+/// `xs:dateTime` as local time: optional fractional seconds, optional zone (converted to local).
+fn parse_xs_date_time(s: &str) -> Option<NaiveDateTime> {
+    let s = s.trim();
+    DateTime::parse_from_rfc3339(s)
+        .map(|dt| dt.with_timezone(&Local).naive_local())
+        .or_else(|_| NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f"))
+        .ok()
 }
 
 fn convert_topo_place(poi: &PoiConfig, tp: &TopographicPlaceXml, usage: &UsageBoost) -> Option<NominatimPlace> {
@@ -202,5 +207,36 @@ mod tests {
             centroid: None,
         };
         assert!(is_valid(&tp, &now));
+    }
+
+    #[test]
+    fn parse_xs_date_time_ignores_fractional_seconds_format() {
+        let plain = parse_xs_date_time("2026-10-12T23:59:59").unwrap();
+        assert_eq!(parse_xs_date_time("2026-10-12T23:59:59.000"), Some(plain));
+        assert_eq!(parse_xs_date_time(" 2026-10-12T23:59:59.0 "), Some(plain));
+        assert!(parse_xs_date_time("2026-10-12T23:59:59.000123").unwrap() > plain);
+    }
+
+    #[test]
+    fn parse_xs_date_time_converts_zone_to_local() {
+        let utc = DateTime::parse_from_rfc3339("2026-10-12T10:00:00Z").unwrap();
+        let local = utc.with_timezone(&Local).naive_local();
+        assert_eq!(parse_xs_date_time("2026-10-12T10:00:00Z"), Some(local));
+        assert_eq!(parse_xs_date_time("2026-10-12T12:00:00.000+02:00"), Some(local));
+    }
+
+    #[test]
+    fn is_valid_rejects_expired_with_fractional_seconds() {
+        let now = Local::now().naive_local();
+        let tp = TopographicPlaceXml {
+            id: Some("test".to_string()),
+            valid_between: Some(ValidBetweenXml {
+                from_date: Some("2020-01-01T00:00:00.000".to_string()),
+                to_date: Some("2020-12-31T23:59:59.999Z".to_string()),
+            }),
+            descriptor: None,
+            centroid: None,
+        };
+        assert!(!is_valid(&tp, &now));
     }
 }
