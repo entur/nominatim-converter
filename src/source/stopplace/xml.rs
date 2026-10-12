@@ -83,8 +83,26 @@ pub(crate) struct AlternativeNameXml {
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct TariffZonesXml {
-    #[serde(rename = "TariffZoneRef", default)]
-    pub refs: Vec<TariffZoneRefXml>,
+    #[serde(rename = "$value", default)]
+    pub refs: Vec<ZoneRefXml>,
+}
+
+/// `TariffZoneRef` and `FareZoneRef` are both valid in `tariffZones`; read either.
+#[derive(Debug, Deserialize)]
+pub(crate) enum ZoneRefXml {
+    TariffZoneRef(TariffZoneRefXml),
+    FareZoneRef(TariffZoneRefXml),
+    #[serde(other)]
+    Other,
+}
+
+impl ZoneRefXml {
+    pub fn ref_(&self) -> Option<&str> {
+        match self {
+            ZoneRefXml::TariffZoneRef(r) | ZoneRefXml::FareZoneRef(r) => r.ref_.as_deref(),
+            ZoneRefXml::Other => None,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -247,5 +265,17 @@ mod tests {
             result.groups.iter().map(|g| (g.id.as_str(), g)).collect();
         assert_eq!(by_id.get("NSR:GroupOfStopPlaces:72").unwrap().name.as_deref(), Some("Hammerfest"));
         assert_eq!(by_id.get("NSR:GroupOfStopPlaces:1").unwrap().name.as_deref(), Some("Oslo"));
+    }
+
+    #[test]
+    fn parse_tariff_and_fare_zone_refs() {
+        let xml = r#"<StopPlace id="NSR:StopPlace:1"><tariffZones>
+            <TariffZoneRef ref="RUT:TariffZone:1"/>
+            <FareZoneRef ref="RUT:FareZone:4"/>
+            <TariffZoneRef ref="RUT:TariffZone:2"/>
+        </tariffZones></StopPlace>"#;
+        let sp: StopPlaceXml = quick_xml::de::from_str(xml).unwrap();
+        let refs: Vec<_> = sp.tariff_zones.unwrap().refs.iter().filter_map(ZoneRefXml::ref_).map(str::to_owned).collect();
+        assert_eq!(refs, ["RUT:TariffZone:1", "RUT:FareZone:4", "RUT:TariffZone:2"]);
     }
 }

@@ -407,7 +407,7 @@ fn build_stop_categories(
 }
 
 /// Append zone categories in 4 passes:
-/// 1. Tariff zone IDs from the stop's `<TariffZoneRef>`s (`tariff_zone_id.RUT.TariffZone.1`)
+/// 1. Tariff zone IDs from the stop's zone refs (`tariff_zone_id.RUT.TariffZone.1`)
 /// 2. Fare zone IDs from the export, or NSR's mirrored refs (`fare_zone_id.RUT.FareZone.4`)
 /// 3. Tariff zone authorities from the ref prefixes (`tariff_zone_authority.RUT`)
 /// 4. Fare zone authorities from each zone's AuthorityRef, export-only
@@ -456,7 +456,7 @@ fn nsr_fare_zone_refs(sp: &StopPlaceXml) -> impl Iterator<Item = &str> {
 fn zone_refs(sp: &StopPlaceXml) -> impl Iterator<Item = &str> {
     sp.tariff_zones.iter()
         .flat_map(|tz| tz.refs.iter())
-        .filter_map(|r| r.ref_.as_deref())
+        .filter_map(ZoneRefXml::ref_)
 }
 
 /// One stop's fare zones. Authority refs look like `RUT:Authority:RUT`; they can't be derived
