@@ -42,9 +42,18 @@ pub fn convert_all(
 /// Throughout, "missing means valid": an absent or unusable bound never excludes a POI.
 fn is_valid(tp: &TopographicPlaceXml, now: &NaiveDateTime) -> bool {
     let Some(vb) = &tp.valid_between else { return true };
-    let from_ok = vb.from_date.as_deref().and_then(parse_xs_date_time).is_none_or(|dt| *now >= dt);
-    let to_ok = vb.to_date.as_deref().and_then(parse_xs_date_time).is_none_or(|dt| *now <= dt);
+    let id = tp.id.as_deref().unwrap_or("");
+    let from_ok = vb.from_date.as_deref().and_then(|d| parse_bound(id, "FromDate", d)).is_none_or(|dt| *now >= dt);
+    let to_ok = vb.to_date.as_deref().and_then(|d| parse_bound(id, "ToDate", d)).is_none_or(|dt| *now <= dt);
     from_ok && to_ok
+}
+
+fn parse_bound(id: &str, field: &str, value: &str) -> Option<NaiveDateTime> {
+    let parsed = parse_xs_date_time(value);
+    if parsed.is_none() {
+        eprintln!("Warning: {id}: unparseable {field} '{value}', treating as open-ended");
+    }
+    parsed
 }
 
 /// `xs:dateTime` as local time: optional fractional seconds, optional zone (converted to local).
