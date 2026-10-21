@@ -56,13 +56,7 @@ pub fn convert_all(
 ) -> Result<usize, Box<dyn std::error::Error>> {
     let stop_place = config.stop_place.as_ref().ok_or("config is missing the required `stopPlace` section")?;
     let xml = std::fs::read_to_string(input)?;
-    let mut result = parse_netex(&xml)?;
-    // A child whose parent is skipped stands alone; as a child it would be hidden by default.
-    for sp in &mut result.stop_places {
-        if sp.parent_site_ref.as_ref().is_some_and(|p| skip.contains(&p.ref_)) {
-            sp.parent_site_ref = None;
-        }
-    }
+    let result = parse_netex(&xml)?;
     let zone_source = ZoneSource::resolve(fare_zone_input, &result)?;
     let importance_calc = ImportanceCalculator::new(usage);
 
@@ -94,7 +88,7 @@ pub fn convert_all(
 
         if let Some(entry) = convert_stop_place(
             stop_place, &importance_calc, sp, &result.topo_places,
-            &zone_source, pop, children,
+            &zone_source, pop, children, skip,
         ) {
             entries.push(entry);
         }
@@ -252,7 +246,6 @@ impl StopPlaceRole {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 /// Ids of the stop places `convert_stop_place` emits; they need a centroid and a name.
 pub(crate) fn convertible_ids(result: &ParseResult) -> HashSet<String> {
     result.stop_places.iter()
@@ -261,6 +254,7 @@ pub(crate) fn convertible_ids(result: &ParseResult) -> HashSet<String> {
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn convert_stop_place(
     stop_place: &StopPlaceConfig,
     importance_calc: &ImportanceCalculator,
@@ -269,6 +263,7 @@ pub(crate) fn convert_stop_place(
     zone_source: &ZoneSource,
     popularity: i64,
     child_stops: &[&StopPlaceXml],
+    skip: &HashSet<String>,
 ) -> Option<NominatimPlace> {
     let centroid_xml = sp.centroid.as_ref()?;
     let coord = Coordinate::new(centroid_xml.location.latitude, centroid_xml.location.longitude);
@@ -284,7 +279,9 @@ pub(crate) fn convert_stop_place(
         stop_place.foreign_importance_factor,
         &stop_place.domestic_countries,
     ));
-    let role = classify_role(&child_types, sp.parent_site_ref.is_some());
+    // A child whose parent is skipped stands alone; as a child it would be hidden by default.
+    let has_parent = sp.parent_site_ref.as_ref().is_some_and(|p| !skip.contains(&p.ref_));
+    let role = classify_role(&child_types, has_parent);
 
     let inferred_types: Vec<String> = child_types
         .iter()
@@ -957,7 +954,7 @@ mod tests {
         ]);
         let result = convert_stop_place(
             config.stop_place.as_ref().unwrap(), &importance_calc, &parent, &HashMap::new(),
-            &no_zones(), 50, &[&child_rail, &child_tram],
+            &no_zones(), 50, &[&child_rail, &child_tram], &HashSet::new(),
         ).unwrap();
         // Trailing "Nationaltheatret" is the tram child's name: child names are only deduped,
         // not filtered against the parent's name.
@@ -976,7 +973,7 @@ mod tests {
         let sp = make_stop_place("NSR:StopPlace:1", "Test", Some("funicular"), Some("other"));
         let result = convert_stop_place(
             config.stop_place.as_ref().unwrap(), &importance_calc, &sp, &HashMap::new(),
-            &no_zones(), 50, &[],
+            &no_zones(), 50, &[], &HashSet::new(),
         ).unwrap();
         let cats = &result.content[0].categories;
         assert!(cats.iter().any(|c| c == "legacy.category.funicular"));
@@ -990,7 +987,7 @@ mod tests {
         let sp = make_stop_place("NSR:StopPlace:1", "Test", Some("bus"), Some("onstreetBus"));
         let result = convert_stop_place(
             config.stop_place.as_ref().unwrap(), &importance_calc, &sp, &HashMap::new(),
-            &no_zones(), 50, &[],
+            &no_zones(), 50, &[], &HashSet::new(),
         ).unwrap();
         let cats = &result.content[0].categories;
         assert!(!cats.iter().any(|c| c == "legacy.category.bus"));
@@ -1004,7 +1001,7 @@ mod tests {
         let sp = make_stop_place("NSR:StopPlace:1", "Test", Some("rail"), Some("railStation"));
         let result = convert_stop_place(
             config.stop_place.as_ref().unwrap(), &importance_calc, &sp, &HashMap::new(),
-            &no_zones(), 50, &[],
+            &no_zones(), 50, &[], &HashSet::new(),
         ).unwrap();
         let cats = &result.content[0].categories;
         assert!(cats.iter().any(|c| c == "stop_place_type.railStation"), "{cats:?}");
@@ -1020,7 +1017,7 @@ mod tests {
         let metro = make_stop_place("NSR:StopPlace:C3", "Metro", None, Some("metroStation"));
         let result = convert_stop_place(
             config.stop_place.as_ref().unwrap(), &importance_calc, &sp, &HashMap::new(),
-            &no_zones(), 50, &[&bus, &rail, &metro],
+            &no_zones(), 50, &[&bus, &rail, &metro], &HashSet::new(),
         ).unwrap();
         let cats = &result.content[0].categories;
         assert!(cats.iter().any(|c| c == "legacy.category.funicular"));
@@ -1045,7 +1042,7 @@ mod tests {
         let standalone = make_stop_place("NSR:StopPlace:Solo", "Solo", Some("bus"), Some("onstreetBus"));
         let res = convert_stop_place(
             config.stop_place.as_ref().unwrap(), &importance_calc, &standalone, &HashMap::new(),
-            &no_zones(), 50, &[],
+            &no_zones(), 50, &[], &HashSet::new(),
         ).unwrap();
         assert_eq!(res.content[0].extra.stop_place_role.as_deref(), Some("standalone"));
 
@@ -1054,7 +1051,7 @@ mod tests {
         child.parent_site_ref = Some(RefAttr { ref_: "NSR:StopPlace:Parent".to_string() });
         let res = convert_stop_place(
             config.stop_place.as_ref().unwrap(), &importance_calc, &child, &HashMap::new(),
-            &no_zones(), 50, &[],
+            &no_zones(), 50, &[], &HashSet::new(),
         ).unwrap();
         assert_eq!(res.content[0].extra.stop_place_role.as_deref(), Some("child"));
 
@@ -1064,7 +1061,7 @@ mod tests {
         let bus_child = make_stop_place("NSR:StopPlace:C1", "Bus", None, Some("onstreetBus"));
         let res = convert_stop_place(
             config.stop_place.as_ref().unwrap(), &importance_calc, &both, &HashMap::new(),
-            &no_zones(), 50, &[&bus_child],
+            &no_zones(), 50, &[&bus_child], &HashSet::new(),
         ).unwrap();
         assert_eq!(res.content[0].extra.stop_place_role.as_deref(), Some("parent"));
     }
@@ -1104,6 +1101,36 @@ mod tests {
         let orphan = stop_line(&content, "NSR:StopPlace:305");
         assert!(!orphan.contains("multimodal.child"), "{orphan}");
         let _ = std::fs::remove_file(&output);
+    }
+
+    #[test]
+    fn skipped_parent_keeps_feeding_its_group() {
+        let stop = |id: &str, kind: &str, parent: &str| format!(
+            r#"<StopPlace id="{id}"><Name>{id}</Name><Centroid><Location><Longitude>10.7</Longitude>
+            <Latitude>59.9</Latitude></Location></Centroid><StopPlaceType>{kind}</StopPlaceType>{parent}</StopPlace>"#);
+        let xml = [
+            stop("NSR:StopPlace:1", "", ""),
+            stop("NSR:StopPlace:2", "railStation", r#"<ParentSiteRef ref="NSR:StopPlace:1"/>"#),
+            stop("NSR:StopPlace:3", "onstreetBus", ""),
+            r#"<GroupOfStopPlaces id="NSR:GroupOfStopPlaces:1"><Name>G</Name><Centroid><Location>
+            <Longitude>10.7</Longitude><Latitude>59.9</Latitude></Location></Centroid><members>
+            <StopPlaceRef ref="NSR:StopPlace:1"/><StopPlaceRef ref="NSR:StopPlace:3"/></members></GroupOfStopPlaces>"#.into(),
+        ].concat();
+        let input = std::env::temp_dir().join("test_skipped_parent.xml");
+        std::fs::write(&input, format!("<root>{xml}</root>")).unwrap();
+        let group_line = |skip: &[&str]| {
+            let output = std::env::temp_dir().join("test_skipped_parent.ndjson");
+            let skip = skip.iter().map(|s| s.to_string()).collect();
+            convert_all(&test_config(), &input, &output, false, None, &UsageBoost::empty(), &skip).unwrap();
+            let content = std::fs::read_to_string(&output).unwrap();
+            let _ = std::fs::remove_file(&output);
+            (stop_line(&content, "NSR:GroupOfStopPlaces:1").to_string(), content)
+        };
+        let (unskipped, _) = group_line(&[]);
+        let (skipped, content) = group_line(&["NSR:StopPlace:1"]);
+        assert_eq!(skipped, unskipped);
+        assert!(!stop_line(&content, "NSR:StopPlace:2").contains("multimodal.child"));
+        let _ = std::fs::remove_file(&input);
     }
 
     #[test]
