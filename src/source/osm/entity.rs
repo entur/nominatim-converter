@@ -213,6 +213,10 @@ impl<'a> OsmEntityConverter<'a> {
             self.admin_boundary_index.find_county_and_municipality(&centroid);
 
         let country = determine_country(county, municipality, all_tags, &centroid);
+        // An extract's boundaries are cut at its edge, so near a border the neighbour's county or
+        // kommune can match. Drop those rather than mix countries.
+        let same_country = |b: &&AdministrativeBoundary| country.as_ref().is_none_or(|c| b.country == *c);
+        let (county, municipality) = (county.filter(same_country), municipality.filter(same_country));
         let osm_id = format!("OSM:TopographicPlace:{}", entity_id);
 
         let visible_categories = build_visible_categories(tags);
@@ -367,19 +371,26 @@ fn resolve_county(
     county: Option<&AdministrativeBoundary>,
     fallback_county: Option<&str>,
 ) -> ResolvedAdmin {
-    let gid = county
-        .and_then(|c| c.ref_code.as_ref())
-        .map(|r| format!("KVE:TopographicPlace:{}", r));
+    let gid = county.and_then(admin_gid);
     let name = county
         .map(|c| titleize(&c.name))
         .or_else(|| fallback_county.map(|s| s.to_string()));
     ResolvedAdmin { gid, name }
 }
 
+/// Kartverket's codespace for Norwegian boundaries, Lantmäteriet's for Swedish (matching
+/// belagenhet). Other countries' refs would collide with them, so they get none.
+fn admin_gid(boundary: &AdministrativeBoundary) -> Option<String> {
+    let codespace = match boundary.country.alpha2.as_str() {
+        "no" => "KVE",
+        "se" => "LAN",
+        _ => return None,
+    };
+    boundary.ref_code.as_ref().map(|r| format!("{codespace}:TopographicPlace:{r}"))
+}
+
 fn resolve_municipality(municipality: Option<&AdministrativeBoundary>) -> ResolvedAdmin {
-    let gid = municipality
-        .and_then(|m| m.ref_code.as_ref())
-        .map(|r| format!("KVE:TopographicPlace:{}", r));
+    let gid = municipality.and_then(admin_gid);
     let name = municipality.map(|m| titleize(&m.name));
     ResolvedAdmin { gid, name }
 }
@@ -436,20 +447,21 @@ fn build_indexed_categories(
 // Utility helpers
 // ---------------------------------------------------------------------------
 
+/// The boundaries file first: it is accurate at the border, where admin boundaries cut by the
+/// extract are not. Admin boundaries and `addr:country` cover points it leaves out (e.g. at sea).
 pub(crate) fn determine_country(
     county: Option<&AdministrativeBoundary>,
     municipality: Option<&AdministrativeBoundary>,
     tags: &HashMap<&str, &str>,
     coord: &Coordinate,
 ) -> Option<Country> {
-    county
-        .map(|c| c.country.clone())
+    geo::get_country(coord)
+        .or_else(|| county.map(|c| c.country.clone()))
         .or_else(|| municipality.map(|m| m.country.clone()))
         .or_else(|| {
             tags.get("addr:country")
                 .and_then(|id| Country::parse(id))
         })
-        .or_else(|| geo::get_country(coord))
 }
 
 /// Extract a 2-letter country code from OSM admin relation tags.
@@ -467,12 +479,6 @@ pub(crate) fn extract_country_code(tags: &HashMap<&str, &str>) -> Option<Country
             return Some(c);
         }
     }
-
-    // If ref is all digits, assume Norway
-    if let Some(ref_val) = tags.get("ref")
-        && ref_val.chars().all(|c| c.is_ascii_digit()) {
-            return Some(Country::no());
-        }
 
     None
 }
@@ -872,6 +878,35 @@ mod tests {
     }
 
     #[test]
+    fn convert_node_across_the_border_ignores_the_neighbours_county() {
+        let config = test_config_with_osm_filters();
+        let (nodes, ways, mut admin, streets, pop) = empty_converter_parts(&config);
+
+        // A Norwegian county cut by the extract so that it reaches into Värmland.
+        admin.add_boundary(AdministrativeBoundary {
+            name: "INNLANDET".to_string(),
+            admin_level: ADMIN_LEVEL_COUNTY,
+            ref_code: Some("34".to_string()),
+            country: Country::no(),
+            centroid: Coordinate { lat: 60.0, lon: 12.0 },
+            bbox: Some(BoundingBox { min_lat: 59.0, max_lat: 61.0, min_lon: 11.0, max_lon: 13.0 }),
+            boundary_nodes: vec![
+                Coordinate { lat: 59.0, lon: 11.0 },
+                Coordinate { lat: 59.0, lon: 13.0 },
+                Coordinate { lat: 61.0, lon: 13.0 },
+                Coordinate { lat: 61.0, lon: 11.0 },
+            ],
+        });
+
+        let mut conv = make_converter(&config, &nodes, &ways, &mut admin, &streets, &pop);
+
+        let tags = HashMap::from([("name", "Arvika sjukhus"), ("amenity", "hospital")]);
+        let place = conv.convert_node(42, 59.65, 12.59, &tags).unwrap();
+        assert_eq!(place.content[0].country_code.as_deref(), Some("se"));
+        assert_eq!(place.content[0].extra.county_gid, None);
+    }
+
+    #[test]
     fn convert_node_with_municipality_has_locality_gid_and_titleized_name() {
         let config = test_config_with_osm_filters();
         let (nodes, ways, mut admin, streets, pop) = empty_converter_parts(&config);
@@ -1125,10 +1160,10 @@ mod tests {
     }
 
     #[test]
-    fn extract_country_code_from_numeric_ref_assumes_norway() {
-        let tags = HashMap::from([("ref", "0301")]);
-        let country = extract_country_code(&tags).unwrap();
-        assert_eq!(country.alpha2, "no");
+    fn extract_country_code_ignores_numeric_ref() {
+        // Swedish kommuner have numeric refs too; the boundary's location decides instead.
+        let tags = HashMap::from([("ref", "0180")]);
+        assert!(extract_country_code(&tags).is_none());
     }
 
     #[test]

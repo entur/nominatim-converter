@@ -52,11 +52,12 @@ static BOUNDARIES: LazyLock<CountryBoundaries> = LazyLock::new(|| {
 pub fn get_country(coord: &Coordinate) -> Option<Country> {
     let latlon = LatLon::new(coord.lat, coord.lon).ok()?;
     let ids = BOUNDARIES.ids(latlon);
-    // BOUNDARIES.ids may return ISO 3166-2 subdivision codes (e.g. "NO-50")
-    // alongside the country ("NO"); only the 2-char country code is wanted.
+    // BOUNDARIES.ids may return ISO 3166-2 subdivision codes alongside the country code. A
+    // subdivision names its parent country, which wins: Svalbard is both "SJ" and "NO-21".
     ids.iter()
-        .find(|id| id.len() == 2)
-        .and_then(|id| Country::parse(id))
+        .find_map(|id| id.split_once('-').map(|(country, _)| country))
+        .or_else(|| ids.iter().find(|id| id.len() == 2).map(|id| &id[..]))
+        .and_then(Country::parse)
 }
 
 #[cfg(test)]
@@ -68,6 +69,30 @@ mod tests {
         let coord = Coordinate::new(45.803417, 15.992278);
         let country = get_country(&coord);
         assert_eq!(country.unwrap().alpha2, "hr");
+    }
+
+    #[test]
+    fn test_svalbard_is_norway() {
+        let coord = Coordinate::new(78.2232, 15.6267);
+        assert_eq!(get_country(&coord).unwrap().alpha2, "no");
+    }
+
+    #[test]
+    fn test_nordic_borders() {
+        // Places within a few hundred metres of a border, checked against OSM.
+        for (lat, lon, country) in [
+            (69.658317, 30.204121, "no"), // Storskog border station
+            (69.371271, 29.687827, "no"), // Skogfoss
+            (69.02152, 29.003885, "ru"),  // Nikel
+            (69.9263, 26.9989, "fi"),     // Deatnu, Teno river
+            (66.5640, 23.8442, "se"),     // Juoksengi kyrka, Torne river
+            (66.7809, 23.9564, "fi"),     // Pello
+            (65.8520, 24.1414, "fi"),     // Tornio
+            (62.9648, 12.0822, "no"),     // Nesjø
+            (62.9171, 12.5059, "se"),     // Helags
+        ] {
+            assert_eq!(get_country(&Coordinate::new(lat, lon)).unwrap().alpha2, country, "{lat},{lon}");
+        }
     }
 
     #[test]

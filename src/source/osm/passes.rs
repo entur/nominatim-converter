@@ -376,8 +376,7 @@ fn collect_admin_relation(
 }
 
 /// Parse a `boundary=administrative` relation into [`AdminRelationData`]. Returns `None` unless
-/// the relation has a parseable county/municipality `admin_level` and all required fields
-/// (name, ref, country) are present.
+/// the relation has a parseable county/municipality `admin_level`, a name and a ref.
 fn parse_admin_relation(
     relation: &osmpbf::Relation,
     tags: &HashMap<&str, &str>,
@@ -388,8 +387,12 @@ fn parse_admin_relation(
     }
 
     let name = tags.get("name")?.to_string();
-    let ref_code = tags.get("ref")?.to_string();
-    let country = extract_country_code(tags)?;
+    // Swedish boundaries carry their SCB code here, as Lantmäteriet's addresses do.
+    let ref_code = tags.get("ref:scb")
+        .or_else(|| tags.get("ref:SE:scb"))
+        .or_else(|| tags.get("ref"))?
+        .to_string();
+    let country = extract_country_code(tags);
 
     let way_ids: Vec<i64> = relation
         .members()

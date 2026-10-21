@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use crate::common::country::Country;
+use crate::common::geo;
 
 use super::address_index::AddressPolygonIndex;
 use super::admin::{AdministrativeBoundary, AdministrativeBoundaryIndex};
@@ -19,7 +20,8 @@ pub(crate) struct AdminRelationData {
     pub(crate) admin_level: i32,
     pub(crate) ref_code: String,
     pub(crate) way_ids: Vec<i64>,
-    pub(crate) country: Country,
+    /// From the relation's tags; `None` falls back to the boundary's centroid.
+    pub(crate) country: Option<Country>,
 }
 
 /// Street way data collected during pass 2, used to build the street spatial
@@ -77,13 +79,16 @@ pub(crate) fn build_admin_boundary_index(
             lon: all_node_coords.iter().map(|c| c.lon).sum::<f64>()
                 / all_node_coords.len() as f64,
         };
+        let Some(country) = relation.country.clone().or_else(|| geo::get_country(&centroid)) else {
+            continue;
+        };
         let bbox = BoundingBox::from_coordinates(&all_node_coords);
 
         let boundary = AdministrativeBoundary {
             name: relation.name.clone(),
             admin_level: relation.admin_level,
             ref_code: Some(relation.ref_code.clone()),
-            country: relation.country.clone(),
+            country,
             centroid,
             bbox,
             boundary_nodes: all_node_coords,
