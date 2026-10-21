@@ -17,7 +17,8 @@
 // Data source identifiers
 pub const SOURCE_ADRESSE: &str = "source.kartverket.matrikkelenadresse";
 pub const SOURCE_STEDSNAVN: &str = "source.kartverket.stedsnavn";
-pub const SOURCE_NSR: &str = "source.nsr";
+/// Followed by the stop's register, e.g. `source.nsr` or `source.ssr`.
+pub const SOURCE_STOP_PLACE_PREFIX: &str = "source.";
 pub const SOURCE_OSM: &str = "source.openstreetmap";
 pub const SOURCE_POI: &str = "source.custom.poi";
 pub const SOURCE_BELAGENHET: &str = "source.lantmateriet.belagenhetsadress";

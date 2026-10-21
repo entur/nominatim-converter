@@ -246,6 +246,11 @@ impl StopPlaceRole {
     }
 }
 
+/// The register an id belongs to, by its codespace: `nsr` for `NSR:StopPlace:1`, `ssr` for SSR's.
+fn register(id: &str) -> String {
+    id.split(':').next().unwrap_or(id).to_ascii_lowercase()
+}
+
 /// Ids of the stop places `convert_stop_place` emits; they need a centroid and a name.
 pub(crate) fn convertible_ids(result: &ParseResult) -> HashSet<String> {
     result.stop_places.iter()
@@ -410,8 +415,9 @@ fn build_stop_categories(
         // First-class facet for v3's stopPlaceTypes filter; legacy.category.* stays for v2.
         indexed_cats.push(format!("{STOP_PLACE_TYPE_PREFIX}{t}"));
     }
-    indexed_cats.push(format!("{SOURCE_NSR}.{}", role.as_str()));
-    indexed_cats.push(SOURCE_NSR.to_string());
+    let register = register(&sp.id);
+    indexed_cats.push(format!("{SOURCE_STOP_PLACE_PREFIX}{register}.{}", role.as_str()));
+    indexed_cats.push(format!("{SOURCE_STOP_PLACE_PREFIX}{register}"));
     indexed_cats.push(LAYER_STOP_PLACE.to_string());
     append_zone_categories(&mut indexed_cats, sp, fare_zones);
     indexed_cats.push(format!("{COUNTRY_PREFIX}{}", country.alpha2));
@@ -543,7 +549,7 @@ fn build_stop_extra(
 
     Extra {
         id: Some(sp.id.clone()),
-        source: Some("nsr".to_string()),
+        source: Some(register(&sp.id)),
         accuracy: Some("point".to_string()),
         country_a: Some(country.alpha3.clone()),
         county_gid: geography.county_gid.clone(),
@@ -597,7 +603,7 @@ pub(crate) fn convert_gosp(
         format!("{LEGACY_CATEGORY_PREFIX}{GOSP}"),
     ];
     let mut indexed_cats = visible_cats.clone();
-    indexed_cats.push(SOURCE_NSR.to_string());
+    indexed_cats.push(format!("{SOURCE_STOP_PLACE_PREFIX}{}", register(&gosp.id)));
     indexed_cats.push(format!("{COUNTRY_PREFIX}{}", country.alpha2));
     if let Some(gid) = &county_gid { indexed_cats.push(county_ids_category(gid)); }
     if let Some(gid) = &locality_gid { indexed_cats.push(locality_ids_category(gid)); }
@@ -675,7 +681,7 @@ pub(crate) fn convert_gosp(
             bbox,
             extra: Extra {
                 id: Some(gosp.id.clone()),
-                source: Some("nsr".to_string()),
+                source: Some(register(&gosp.id)),
                 accuracy: Some("point".to_string()),
                 country_a: Some(country.alpha3),
                 county_gid,
@@ -965,6 +971,21 @@ mod tests {
     }
 
     // ===== Category tests =====
+
+    #[test]
+    fn swedish_stop_is_sourced_from_ssr() {
+        let config = test_config();
+        let importance_calc = ImportanceCalculator::new(&EMPTY_USAGE);
+        let sp = make_stop_place("SSR:StopPlace:1", "Test", Some("rail"), Some("railStation"));
+        let result = convert_stop_place(
+            config.stop_place.as_ref().unwrap(), &importance_calc, &sp, &HashMap::new(),
+            &no_zones(), 50, &[], &HashSet::new(),
+        ).unwrap();
+        let content = &result.content[0];
+        assert_eq!(content.extra.source.as_deref(), Some("ssr"));
+        assert!(content.categories.iter().any(|c| c == "source.ssr"));
+        assert!(!content.categories.iter().any(|c| c.starts_with("source.nsr")));
+    }
 
     #[test]
     fn funicular_transport_mode_included_in_categories() {
