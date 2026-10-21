@@ -31,7 +31,7 @@ pub fn convert(
     output: &Path,
     is_appending: bool,
     usage: &crate::common::usage::UsageBoost,
-    written: &mut std::collections::HashSet<String>,
+    written: &mut std::collections::HashMap<String, String>,
 ) -> Result<usize, Box<dyn std::error::Error>> {
     config.osm.as_ref().ok_or("config is missing the required `osm` section")?;
     let converter = OsmConverter::new(config.clone());

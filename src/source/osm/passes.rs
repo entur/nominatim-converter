@@ -57,7 +57,7 @@ impl OsmConverter {
         output: &Path,
         is_appending: bool,
         usage: &crate::common::usage::UsageBoost,
-        written: &mut HashSet<String>,
+        written: &mut HashMap<String, String>,
     ) -> Result<usize, Box<dyn std::error::Error>> {
         assert!(input.exists(), "Input file does not exist: {:?}", input);
 
@@ -116,7 +116,9 @@ impl OsmConverter {
         )?;
 
         let before = results.len();
-        results.retain(|place| place.content.iter().all(|c| written.insert(c.place_id.clone())));
+        results.retain_mut(|place| {
+            place.content.iter_mut().all(|c| claim_place_id(written, &mut c.place_id, &c.object_type))
+        });
         if results.len() < before {
             eprintln!("  Skipped {} entities already written", before - results.len());
         }
@@ -381,6 +383,15 @@ fn collect_admin_relation(
     }
 }
 
+/// False when `written` (place_id -> object type) already holds this object, e.g. from an
+/// overlapping extract. Node 1 and way 1 share a place_id, so the later type gets a suffixed one.
+fn claim_place_id(written: &mut HashMap<String, String>, place_id: &mut String, object_type: &str) -> bool {
+    if written.get(place_id.as_str()).is_some_and(|t| t != object_type) {
+        *place_id = format!("{place_id}-{object_type}");
+    }
+    written.insert(place_id.clone(), object_type.to_string()).is_none()
+}
+
 /// Parse a `boundary=administrative` relation into [`AdminRelationData`]. Returns `None` unless
 /// the relation has a parseable county/municipality `admin_level`, a name and a ref.
 fn parse_admin_relation(
@@ -539,6 +550,20 @@ fn collect_address_node<'a>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn claim_place_id_skips_repeats_and_separates_object_types() {
+        let mut written = std::collections::HashMap::new();
+        let mut claim = |id: &str, kind: &str| {
+            let mut id = id.to_string();
+            super::claim_place_id(&mut written, &mut id, kind).then_some(id)
+        };
+        assert_eq!(claim("OSM-TopographicPlace-1", "W").as_deref(), Some("OSM-TopographicPlace-1"));
+        assert_eq!(claim("OSM-TopographicPlace-1", "N").as_deref(), Some("OSM-TopographicPlace-1-N"));
+        // the same objects again, from an overlapping extract
+        assert_eq!(claim("OSM-TopographicPlace-1", "W"), None);
+        assert_eq!(claim("OSM-TopographicPlace-1", "N"), None);
+    }
+
     use super::*;
 
     #[test]

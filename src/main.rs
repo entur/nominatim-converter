@@ -14,7 +14,7 @@ use common::input::{CACHE_DIR_ENV, CacheOptions, ResolvedInput, is_cached, resol
 use common::norwegian_counties;
 use common::usage::UsageBoost;
 use config::{SourceInput, SourceInputs};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -176,7 +176,7 @@ fn main() {
         Action::Stopplace(args) => run_stopplace(args, opts),
         Action::Matrikkel(args) => run_matrikkel(args, opts),
         Action::Osm(args) => run_conversion("OSM PBF", args, None, opts, |cfg| cfg.osm.as_ref().and_then(|s| s.min_lines), |c, i, o, a, u| {
-            source::osm::convert(c, i, o, a, u, &mut HashSet::new())
+            source::osm::convert(c, i, o, a, u, &mut HashMap::new())
         }),
         Action::Stedsnavn(args) => run_conversion("Stedsnavn", args, Some("*.gml"), opts, |cfg| cfg.stedsnavn.as_ref().and_then(|s| s.min_lines), source::stedsnavn::convert),
         Action::Poi(args) => run_conversion("POI", args, None, opts, |cfg| cfg.poi.as_ref().and_then(|s| s.min_lines), source::poi::convert),
@@ -468,7 +468,7 @@ fn run_build(args: BuildArgs, opts: RunOptions) -> Result<(), Box<dyn std::error
     }
     if let Some(osm) = cfg.osm.as_ref() {
         // Neighbouring extracts overlap at the border, and Photon rejects a repeated place_id.
-        let mut written = HashSet::new();
+        let mut written = HashMap::new();
         for (label, input) in resolve_sources(&osm.input, "osm", None, opts)? {
             run_one_source(&label, input.path(), output, &cfg, osm.min_lines, &usage, |c, i, o, a, u| {
                 source::osm::convert(c, i, o, a, u, &mut written)
