@@ -39,6 +39,44 @@ pub enum SourceInput {
     Municipality(String),
 }
 
+/// One input, or a list converted in order into the same output (e.g. one country each).
+/// `minLines` applies to each input on its own.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SourceInputs {
+    One(SourceInput),
+    Many(Vec<SourceInput>),
+}
+
+// Hand-written rather than `#[serde(untagged)]`, which hides the inner error ("unknown variant
+// `ulr`") behind "data did not match any variant".
+impl<'de> Deserialize<'de> for SourceInputs {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = SourceInputs;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("an input object or a list of them")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
+                SourceInput::deserialize(serde::de::value::MapAccessDeserializer::new(map)).map(SourceInputs::One)
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(self, seq: A) -> Result<Self::Value, A::Error> {
+                Vec::deserialize(serde::de::value::SeqAccessDeserializer::new(seq)).map(SourceInputs::Many)
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
+impl SourceInputs {
+    pub fn as_slice(&self) -> &[SourceInput] {
+        match self {
+            SourceInputs::One(input) => std::slice::from_ref(input),
+            SourceInputs::Many(inputs) => inputs,
+        }
+    }
+}
+
 // Each source config carries an optional `minLines` sanity threshold (see the `min_lines`
 // field on each *Config struct below): if a conversion writes fewer entries, it aborts.
 // Unset means no check; the `--min-lines` CLI flag overrides it per run.
@@ -60,7 +98,7 @@ fn default_usage_floor() -> u64 { crate::common::usage::DEFAULT_USAGE_FLOOR }
 #[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct OsmConfig {
-    pub input: SourceInput,
+    pub input: SourceInputs,
     pub default_value: f64,
     pub rank_address: RankAddress,
     pub filters: Vec<PoiFilter>,
@@ -131,17 +169,20 @@ pub struct PoiConfig {
 #[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct StopPlaceConfig {
-    pub input: SourceInput,
+    pub input: SourceInputs,
     pub default_value: i64,
     pub rank_address: i32,
-    /// Multiplier applied to the importance of stops/GoSPs that resolve to a country other than
-    /// Norway, so foreign hubs (e.g. the Berlin stop group) don't outrank Norwegian places on a
-    /// bare prefix like "ber". `1.0` = no penalty. Applied after normalization and the GoSP cap,
+    /// Multiplier applied to the importance of stops/GoSPs that resolve to a country outside
+    /// `domesticCountries`, so foreign hubs (e.g. the Berlin stop group) don't outrank domestic
+    /// places on a bare prefix like "ber". `1.0` = no penalty. Applied after normalization and the GoSP cap,
     /// then clamped to the valid importance range. Importance is only one additive term in
     /// Photon's final rank, so this mainly breaks near-ties; ~0.6-0.7 puts a capped foreign hub
     /// (0.92) below a Norwegian city (~0.72). Validate changes with an autocomplete acceptance test.
     #[serde(default = "default_foreign_importance_factor")]
     pub foreign_importance_factor: f64,
+    /// ISO alpha-2 codes exempt from `foreignImportanceFactor`, any case.
+    #[serde(default = "default_domestic_countries")]
+    pub domestic_countries: Vec<String>,
     pub stop_type_factors: std::collections::HashMap<String, f64>,
     pub interchange_factors: std::collections::HashMap<String, f64>,
     /// Group-of-stop-places tuning. GoSPs are parsed from the same StopPlace NeTEx input and
@@ -152,8 +193,17 @@ pub struct StopPlaceConfig {
     /// export's zone IDs and authorities but are due to disappear from the NSR export.
     #[serde(default)]
     pub fare_zones: Option<FareZonesConfig>,
+    /// Cross-register duplicates; see `source::stopplace::dedupe`.
+    #[serde(default)]
+    pub dedupe: Option<DedupeConfig>,
     #[serde(default)]
     pub min_lines: Option<usize>,
+}
+
+#[derive(Deserialize, Clone)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DedupeConfig {
+    pub input: SourceInput,
 }
 
 /// The fare zone NeTEx export (`https://api.entur.io/distance/netex/fare-zones`), the
@@ -186,6 +236,8 @@ pub struct GroupOfStopPlacesConfig {
 fn default_gosp_rank() -> i32 { 30 }
 
 fn default_foreign_importance_factor() -> f64 { 1.0 }
+
+fn default_domestic_countries() -> Vec<String> { vec!["no".to_string()] }
 
 impl Default for GroupOfStopPlacesConfig {
     fn default() -> Self {
@@ -294,9 +346,47 @@ mod tests {
     #[test]
     fn test_input_parses_per_section() {
         let config: Config = serde_json::from_str(TEST_CONFIG).unwrap();
-        assert_eq!(config.osm.as_ref().unwrap().input, SourceInput::File("x.osm.pbf".into()));
+        assert_eq!(config.osm.as_ref().unwrap().input, SourceInputs::One(SourceInput::File("x.osm.pbf".into())));
         assert_eq!(config.matrikkel.as_ref().unwrap().input, SourceInput::Region("03".into()));
         assert_eq!(config.poi.as_ref().unwrap().input, SourceInput::Url("https://example.com/poi.xml".into()));
+    }
+
+    #[test]
+    fn test_input_list() {
+        let json = TEST_CONFIG.replace(
+            r#""input": { "file": "x.osm.pbf" }"#,
+            r#""input": [{ "file": "no.osm.pbf" }, { "url": "https://example.com/se.osm.pbf" }]"#,
+        );
+        let config: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(config.osm.as_ref().unwrap().input.as_slice(), [
+            SourceInput::File("no.osm.pbf".into()),
+            SourceInput::Url("https://example.com/se.osm.pbf".into()),
+        ]);
+        assert_eq!(config.stop_place.as_ref().unwrap().input.as_slice().len(), 1);
+    }
+
+    #[test]
+    fn test_input_error_names_the_bad_key() {
+        for bad in [r#"{ "ulr": "x" }"#, r#"[{ "url": "a" }, { "ulr": "b" }]"#] {
+            let json = TEST_CONFIG.replace(r#"{ "file": "x.osm.pbf" }"#, bad);
+            let err = serde_json::from_str::<Config>(&json).err().unwrap().to_string();
+            assert!(err.contains("unknown variant `ulr`"), "{err}");
+        }
+    }
+
+    #[test]
+    fn test_stop_place_dedupe_and_domestic_countries() {
+        let sp: StopPlaceConfig = serde_json::from_str(
+            r#"{ "input": { "file": "x.zip" }, "defaultValue": 50, "rankAddress": 30,
+                 "stopTypeFactors": {}, "interchangeFactors": {},
+                 "domesticCountries": ["no", "se"], "dedupe": { "input": { "file": "d.csv" } } }"#,
+        ).unwrap();
+        assert_eq!(sp.domestic_countries, ["no", "se"]);
+        assert_eq!(sp.dedupe.unwrap().input, SourceInput::File("d.csv".into()));
+        let config: Config = serde_json::from_str(TEST_CONFIG).unwrap();
+        let sp = config.stop_place.unwrap();
+        assert_eq!(sp.domestic_countries, ["no"]);
+        assert!(sp.dedupe.is_none());
     }
 
     #[test]

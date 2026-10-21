@@ -179,6 +179,52 @@ fn build_without_fare_zones_key_falls_back_to_nsr_refs() {
 }
 
 #[test]
+fn build_converts_input_lists_and_dedupes_across_them() {
+    let f = |name: &str| test_data(name).display().to_string();
+    let swedish = std::env::temp_dir().join(format!("nominatim-build-{}-se.xml", std::process::id()));
+    std::fs::write(&swedish, r#"<PublicationDelivery><StopPlace id="SSR:StopPlace:1"><Name>Ny</Name>
+        <Centroid><Location><Longitude>11.97</Longitude><Latitude>57.70</Latitude></Location></Centroid>
+        </StopPlace></PublicationDelivery>"#).unwrap();
+    // SSR:StopPlace:9 is in neither input, so NSR:StopPlace:305 has to stay.
+    let csv = std::env::temp_dir().join(format!("nominatim-build-{}-dedupe.csv", std::process::id()));
+    std::fs::write(&csv, "no,se,preferred\n\
+        NSR:StopPlace:56697,SSR:StopPlace:1,SSR:StopPlace:1\n\
+        NSR:StopPlace:305,SSR:StopPlace:9,SSR:StopPlace:9\n").unwrap();
+    let config_json = format!(
+        r#"{{
+  "stopPlace": {{
+    "input": [{{ "file": "{stop}" }}, {{ "file": "{se}" }}],
+    "dedupe": {{ "input": {{ "file": "{csv}" }} }},
+    "defaultValue": 50, "rankAddress": 30,
+    "stopTypeFactors": {{}}, "interchangeFactors": {{}}
+  }}
+}}"#,
+        stop = f("stopPlaces.xml"),
+        se = swedish.display(),
+        csv = csv.display(),
+    );
+    let config = write_temp_config("build-dedupe", &config_json);
+    let output = temp_output("build-dedupe");
+    let (success, _, stderr) = run_converter(&["build", "-c", config.to_str().unwrap(), "-o", output.to_str().unwrap(), "-f"]);
+    assert!(success, "build failed: {stderr}");
+    assert!(stderr.contains("kept 1 stop places whose preferred duplicate is missing: NSR:StopPlace:305"), "{stderr}");
+    let se_name = swedish.file_name().unwrap().to_str().unwrap();
+    assert!(stderr.contains(&format!("StopPlace [{se_name}]")), "logs should name the input: {stderr}");
+
+    let lines = read_ndjson(&output);
+    assert_eq!(lines.iter().filter(|l| l["type"] == "NominatimDumpFile").count(), 1);
+    let ids: std::collections::HashSet<&str> = lines.iter()
+        .filter_map(|l| l["content"][0]["extra"]["id"].as_str()).collect();
+    assert!(ids.contains("SSR:StopPlace:1") && ids.contains("NSR:StopPlace:305"), "{ids:?}");
+    assert!(!ids.contains("NSR:StopPlace:56697"), "non-preferred duplicate should be left out");
+
+    cleanup(&output);
+    for path in [&config, &swedish, &csv] {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[test]
 fn build_skips_omitted_sources() {
     // The headline behavior: a config with only some source sections builds cleanly and
     // produces exactly that subset (this is the sweden-test deployment shape).

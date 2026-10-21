@@ -13,7 +13,8 @@ use clap::{Parser, Subcommand};
 use common::input::{CACHE_DIR_ENV, CacheOptions, ResolvedInput, is_cached, resolve_input, warn_if_stale};
 use common::norwegian_counties;
 use common::usage::UsageBoost;
-use config::SourceInput;
+use config::{SourceInput, SourceInputs};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -174,7 +175,9 @@ fn main() {
         Action::Build(args) => run_build(args, opts),
         Action::Stopplace(args) => run_stopplace(args, opts),
         Action::Matrikkel(args) => run_matrikkel(args, opts),
-        Action::Osm(args) => run_conversion("OSM PBF", args, None, opts, |cfg| cfg.osm.as_ref().and_then(|s| s.min_lines), source::osm::convert),
+        Action::Osm(args) => run_conversion("OSM PBF", args, None, opts, |cfg| cfg.osm.as_ref().and_then(|s| s.min_lines), |c, i, o, a, u| {
+            source::osm::convert(c, i, o, a, u, &mut HashSet::new())
+        }),
         Action::Stedsnavn(args) => run_conversion("Stedsnavn", args, Some("*.gml"), opts, |cfg| cfg.stedsnavn.as_ref().and_then(|s| s.min_lines), source::stedsnavn::convert),
         Action::Poi(args) => run_conversion("POI", args, None, opts, |cfg| cfg.poi.as_ref().and_then(|s| s.min_lines), source::poi::convert),
         Action::Belagenhet(args) => run_conversion("Belägenhetsadress", args, Some("*.gpkg"), opts, |cfg| cfg.belagenhet.as_ref().and_then(|s| s.min_lines), source::belagenhet::convert),
@@ -307,7 +310,7 @@ fn run_stopplace(
     }
     let fare_zone_path = fare_zones.as_ref().map(ResolvedInput::path);
     run_conversion("StopPlace", args.convert, Some("*.xml"), opts, |cfg| cfg.stop_place.as_ref().and_then(|s| s.min_lines), |cfg, input, output, append, usage| {
-        source::stopplace::convert(cfg, input, output, append, fare_zone_path, usage)
+        source::stopplace::convert(cfg, input, output, append, fare_zone_path, usage, &HashSet::new())
     })
     // `fare_zones` drops here; if temp, its file is cleaned up automatically.
 }
@@ -425,6 +428,11 @@ fn run_build(args: BuildArgs, opts: RunOptions) -> Result<(), Box<dyn std::error
         }
         None => None,
     };
+    // Hand-maintained, so its age says nothing about whether it is current.
+    let dedupe_resolved = match cfg.stop_place.as_ref().and_then(|sp| sp.dedupe.as_ref()) {
+        Some(d) => Some(resolve_source(&d.input, "dedupe", None, RunOptions { stale_after: None, ..opts })?),
+        None => None,
+    };
 
     if let Some(matrikkel) = cfg.matrikkel.as_ref() {
         let input = resolve_source(&matrikkel.input, "matrikkel", Some("*.csv"), opts)?;
@@ -440,15 +448,32 @@ fn run_build(args: BuildArgs, opts: RunOptions) -> Result<(), Box<dyn std::error
         run_one_source("POI", input.path(), output, &cfg, poi.min_lines, &usage, source::poi::convert)?;
     }
     if let Some(stop_place) = cfg.stop_place.as_ref() {
-        let input = resolve_source(&stop_place.input, "stopplace", Some("*.xml"), opts)?;
+        let inputs = resolve_sources(&stop_place.input, "stopplace", Some("*.xml"), opts)?;
+        let skip = match dedupe_resolved.as_ref() {
+            Some(csv) => {
+                let mut present = HashSet::new();
+                for (_, input) in &inputs {
+                    present.extend(source::stopplace::stop_place_ids(input.path())?);
+                }
+                source::stopplace::dedupe::skip_set(csv.path(), &present)?
+            }
+            None => HashSet::new(),
+        };
         let fare_zone_path = fare_zones_resolved.as_ref().map(ResolvedInput::path);
-        run_one_source("StopPlace", input.path(), output, &cfg, stop_place.min_lines, &usage, |c, i, o, a, u| {
-            source::stopplace::convert(c, i, o, a, fare_zone_path, u)
-        })?;
+        for (label, input) in &inputs {
+            run_one_source(label, input.path(), output, &cfg, stop_place.min_lines, &usage, |c, i, o, a, u| {
+                source::stopplace::convert(c, i, o, a, fare_zone_path, u, &skip)
+            })?;
+        }
     }
     if let Some(osm) = cfg.osm.as_ref() {
-        let input = resolve_source(&osm.input, "osm", None, opts)?;
-        run_one_source("OSM PBF", input.path(), output, &cfg, osm.min_lines, &usage, source::osm::convert)?;
+        // Neighbouring extracts overlap at the border, and Photon rejects a repeated place_id.
+        let mut written = HashSet::new();
+        for (label, input) in resolve_sources(&osm.input, "osm", None, opts)? {
+            run_one_source(&label, input.path(), output, &cfg, osm.min_lines, &usage, |c, i, o, a, u| {
+                source::osm::convert(c, i, o, a, u, &mut written)
+            })?;
+        }
     }
     if let Some(belagenhet) = cfg.belagenhet.as_ref() {
         match &belagenhet.input {
@@ -541,6 +566,29 @@ fn resolve_source(
     Ok(resolved)
 }
 
+/// `resolve_source` for each of a section's inputs, in order, labelled for log lines: the
+/// section's label, plus the input's file name when there are several. An empty list is an error.
+fn resolve_sources(
+    srcs: &SourceInputs,
+    section: &str,
+    extract_glob: Option<&str>,
+    opts: RunOptions,
+) -> Result<Vec<(String, ResolvedInput)>, Box<dyn std::error::Error>> {
+    let srcs = srcs.as_slice();
+    if srcs.is_empty() {
+        return Err(format!("{section}: `input` list is empty").into());
+    }
+    let name = source_label(section);
+    srcs.iter().map(|src| {
+        let label = match src {
+            SourceInput::Url(u) if srcs.len() > 1 => format!("{name} [{}]", u.rsplit('/').next().unwrap_or(u)),
+            SourceInput::File(p) if srcs.len() > 1 => format!("{name} [{}]", p.file_name().unwrap_or_default().display()),
+            _ => name.to_string(),
+        };
+        Ok((label, resolve_source(src, section, extract_glob, opts)?))
+    }).collect()
+}
+
 /// Display label for a config section, matching the single-source subcommand names.
 fn source_label(section: &str) -> &str {
     match section {
@@ -549,6 +597,7 @@ fn source_label(section: &str) -> &str {
         "poi" => "POI",
         "stopplace" => "StopPlace",
         "farezones" => "Fare zones",
+        "dedupe" => "Stop place dedupe",
         "osm" => "OSM PBF",
         "belagenhet" => "Belägenhetsadress",
         "usage" => "Usage",

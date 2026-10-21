@@ -57,6 +57,7 @@ impl OsmConverter {
         output: &Path,
         is_appending: bool,
         usage: &crate::common::usage::UsageBoost,
+        written: &mut HashSet<String>,
     ) -> Result<usize, Box<dyn std::error::Error>> {
         assert!(input.exists(), "Input file does not exist: {:?}", input);
 
@@ -100,7 +101,7 @@ impl OsmConverter {
         eprintln!("  {}", address_polygon_index.get_statistics());
         eprintln!("  {}", address_node_index.get_statistics());
 
-        let results = self.pass4_convert(
+        let mut results = self.pass4_convert(
             input,
             &p2.poi_way_ids,
             &p1.poi_relation_member_way_ids,
@@ -114,6 +115,11 @@ impl OsmConverter {
             usage,
         )?;
 
+        let before = results.len();
+        results.retain(|place| place.content.iter().all(|c| written.insert(c.place_id.clone())));
+        if results.len() < before {
+            eprintln!("  Skipped {} entities already written", before - results.len());
+        }
         eprintln!("Finished processing {} entities", results.len());
         let count = JsonWriter::export(&results, output, is_appending)?;
 

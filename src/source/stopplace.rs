@@ -1,4 +1,5 @@
 mod convert;
+pub(crate) mod dedupe;
 pub(crate) mod farezone;
 mod popularity;
 pub(crate) mod xml;
@@ -11,8 +12,14 @@ pub fn convert(
     is_appending: bool,
     fare_zones: Option<&std::path::Path>,
     usage: &crate::common::usage::UsageBoost,
+    skip: &std::collections::HashSet<String>,
 ) -> Result<usize, Box<dyn std::error::Error>> {
-    convert::convert_all(config, input, output, is_appending, fare_zones, usage)
+    convert::convert_all(config, input, output, is_appending, fare_zones, usage, skip)
+}
+
+/// Ids of the stop places `convert` would emit from `input`, for `dedupe::skip_set`.
+pub fn stop_place_ids(input: &std::path::Path) -> Result<std::collections::HashSet<String>, Box<dyn std::error::Error>> {
+    Ok(convert::convertible_ids(&xml::parse_netex(&std::fs::read_to_string(input)?)?))
 }
 
 #[cfg(test)]

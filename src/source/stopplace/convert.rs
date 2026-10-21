@@ -33,12 +33,12 @@ use super::farezone::FareZones;
 use super::popularity::calculate_stop_popularity;
 use super::xml::*;
 
-/// Apply the configured non-Norwegian importance penalty. A stop/GoSP resolved to any country
-/// other than Norway has its importance multiplied by `factor` (1.0 = no penalty), then clamped
+/// Apply the configured foreign importance penalty. A stop/GoSP resolved to a country outside
+/// `domestic` has its importance multiplied by `factor` (1.0 = no penalty), then clamped
 /// to `[IMPORTANCE_FLOOR, 1.0]` so the result stays a valid Photon importance even if `factor`
 /// is misconfigured above 1.0.
-fn apply_foreign_penalty(importance: f64, country: &Country, factor: f64) -> f64 {
-    if country.alpha2 == "no" {
+fn apply_foreign_penalty(importance: f64, country: &Country, factor: f64, domestic: &[String]) -> f64 {
+    if domestic.iter().any(|c| c.eq_ignore_ascii_case(&country.alpha2)) {
         importance
     } else {
         (importance * factor).clamp(IMPORTANCE_FLOOR, 1.0)
@@ -52,10 +52,17 @@ pub fn convert_all(
     is_appending: bool,
     fare_zone_input: Option<&Path>,
     usage: &UsageBoost,
+    skip: &HashSet<String>,
 ) -> Result<usize, Box<dyn std::error::Error>> {
     let stop_place = config.stop_place.as_ref().ok_or("config is missing the required `stopPlace` section")?;
     let xml = std::fs::read_to_string(input)?;
-    let result = parse_netex(&xml)?;
+    let mut result = parse_netex(&xml)?;
+    // A child whose parent is skipped stands alone; as a child it would be hidden by default.
+    for sp in &mut result.stop_places {
+        if sp.parent_site_ref.as_ref().is_some_and(|p| skip.contains(&p.ref_)) {
+            sp.parent_site_ref = None;
+        }
+    }
     let zone_source = ZoneSource::resolve(fare_zone_input, &result)?;
     let importance_calc = ImportanceCalculator::new(usage);
 
@@ -80,8 +87,8 @@ pub fn convert_all(
 
     let mut entries = Vec::new();
 
-    // Convert stop places
-    for sp in &result.stop_places {
+    // Convert stop places. Skipped stops still shape their parents and groups above.
+    for sp in result.stop_places.iter().filter(|sp| !skip.contains(&sp.id)) {
         let pop = stop_popularities.get(&sp.id).copied().unwrap_or(0);
         let children = child_stops.get(&sp.id).map(Vec::as_slice).unwrap_or_default();
 
@@ -100,8 +107,12 @@ pub fn convert_all(
         .iter().map(String::as_str).collect();
     log_secondary_gosps(&secondary_gosps, &result.groups);
 
-    // Convert groups of stop places
+    // Convert groups of stop places, except those whose every member is skipped
     for gosp in &result.groups {
+        let members = gosp.members.as_ref().map_or(&[][..], |m| &m.refs);
+        if !members.is_empty() && members.iter().all(|m| skip.contains(&m.ref_)) {
+            continue;
+        }
         let is_secondary = secondary_gosps.contains(gosp.id.as_str());
         if let Some(entry) = convert_gosp(
             stop_place, &importance_calc, gosp, &result.topo_places,
@@ -242,6 +253,14 @@ impl StopPlaceRole {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Ids of the stop places `convert_stop_place` emits; they need a centroid and a name.
+pub(crate) fn convertible_ids(result: &ParseResult) -> HashSet<String> {
+    result.stop_places.iter()
+        .filter(|sp| sp.centroid.is_some() && sp.name.is_some())
+        .map(|sp| sp.id.clone())
+        .collect()
+}
+
 pub(crate) fn convert_stop_place(
     stop_place: &StopPlaceConfig,
     importance_calc: &ImportanceCalculator,
@@ -263,6 +282,7 @@ pub(crate) fn convert_stop_place(
         importance_calc.calculate_importance(popularity as f64),
         &country,
         stop_place.foreign_importance_factor,
+        &stop_place.domestic_countries,
     ));
     let role = classify_role(&child_types, sp.parent_site_ref.is_some());
 
@@ -569,7 +589,7 @@ pub(crate) fn convert_gosp(
         SECONDARY_GOSP_IMPORTANCE.max(IMPORTANCE_FLOOR)
     } else {
         let capped = importance_calc.calculate_importance_for(&gosp.id, gosp_pop).min(GOSP_IMPORTANCE_CAP);
-        apply_foreign_penalty(capped, &country, stop_place.foreign_importance_factor)
+        apply_foreign_penalty(capped, &country, stop_place.foreign_importance_factor, &stop_place.domestic_countries)
     };
     let importance = RawNumber::from_f64_6dp(raw_importance);
 
@@ -808,27 +828,35 @@ mod tests {
 
     // ===== Foreign importance penalty tests =====
 
+    fn norway_only() -> Vec<String> { vec!["no".to_string()] }
+
     #[test]
     fn foreign_penalty_leaves_norwegian_untouched() {
-        assert_eq!(apply_foreign_penalty(0.92, &Country::no(), 0.6), 0.92);
+        assert_eq!(apply_foreign_penalty(0.92, &Country::no(), 0.6, &norway_only()), 0.92);
+    }
+
+    #[test]
+    fn foreign_penalty_skips_all_domestic_countries() {
+        let nordic = vec!["no".to_string(), "SE".to_string()];
+        assert_eq!(apply_foreign_penalty(0.92, &Country::se(), 0.6, &nordic), 0.92);
     }
 
     #[test]
     fn foreign_penalty_scales_non_norwegian() {
         // A foreign GoSP at the cap (0.92) with a 0.6 factor lands below a domestic city;
         // Country::se() stands in for any non-Norwegian country.
-        assert!((apply_foreign_penalty(0.92, &Country::se(), 0.6) - 0.552).abs() < 1e-9);
+        assert!((apply_foreign_penalty(0.92, &Country::se(), 0.6, &norway_only()) - 0.552).abs() < 1e-9);
     }
 
     #[test]
     fn foreign_penalty_floors_result() {
         // A tiny foreign importance times a small factor can't fall below the floor.
-        assert_eq!(apply_foreign_penalty(IMPORTANCE_FLOOR, &Country::se(), 0.1), IMPORTANCE_FLOOR);
+        assert_eq!(apply_foreign_penalty(IMPORTANCE_FLOOR, &Country::se(), 0.1, &norway_only()), IMPORTANCE_FLOOR);
     }
 
     #[test]
     fn foreign_penalty_factor_one_is_noop() {
-        assert_eq!(apply_foreign_penalty(0.5, &Country::se(), 1.0), 0.5);
+        assert_eq!(apply_foreign_penalty(0.5, &Country::se(), 1.0, &norway_only()), 0.5);
     }
 
     // ===== Transport mode formatting tests =====
@@ -1048,10 +1076,33 @@ mod tests {
         let config = test_config();
         let input = test_data_path("stopPlaces.xml");
         let output = std::env::temp_dir().join("test_stopplace_convert_output.ndjson");
-        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty()).unwrap();
+        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &HashSet::new()).unwrap();
         let content = std::fs::read_to_string(&output).unwrap();
         assert!(content.contains("NominatimDumpFile"));
         assert!(content.contains("NSR:StopPlace:56697"));
+        let _ = std::fs::remove_file(&output);
+    }
+
+    #[test]
+    fn convert_leaves_out_skipped_stops() {
+        let config = test_config();
+        let input = test_data_path("stopPlaces.xml");
+        let output = std::env::temp_dir().join("test_stopplace_skip_output.ndjson");
+        let skip: HashSet<String> = [
+            "NSR:StopPlace:56697",
+            // parent of 305 and 59649
+            "NSR:StopPlace:59650",
+            // all members of NSR:GroupOfStopPlaces:72
+            "NSR:StopPlace:56851", "NSR:StopPlace:56689", "NSR:StopPlace:56676", "NSR:StopPlace:59048",
+        ].map(String::from).into();
+        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &skip).unwrap();
+        let content = std::fs::read_to_string(&output).unwrap();
+        assert!(!content.contains("\"id\":\"NSR:StopPlace:56697\""));
+        assert!(!content.contains("\"id\":\"NSR:StopPlace:59650\""));
+        assert!(!content.contains("\"id\":\"NSR:GroupOfStopPlaces:72\""));
+        assert!(content.contains("\"id\":\"NSR:GroupOfStopPlaces:1\""));
+        let orphan = stop_line(&content, "NSR:StopPlace:305");
+        assert!(!orphan.contains("multimodal.child"), "{orphan}");
         let _ = std::fs::remove_file(&output);
     }
 
@@ -1060,7 +1111,7 @@ mod tests {
         let config = test_config();
         let input = test_data_path("stopPlaces.xml");
         let output = std::env::temp_dir().join("test_gosp_convert_output.ndjson");
-        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty()).unwrap();
+        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &HashSet::new()).unwrap();
         let content = std::fs::read_to_string(&output).unwrap();
         assert!(content.contains("NSR:GroupOfStopPlaces:1"));
         assert!(content.contains("NSR:GroupOfStopPlaces:72"));
@@ -1319,7 +1370,7 @@ mod tests {
             vec!["NSR:GroupOfStopPlaces:1".to_string()];
         let input = test_data_path("stopPlaces.xml");
         let output = std::env::temp_dir().join("test_secondary_gosp_cap.ndjson");
-        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty()).unwrap();
+        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &HashSet::new()).unwrap();
         let content = std::fs::read_to_string(&output).unwrap();
         let _ = std::fs::remove_file(&output);
 
@@ -1353,7 +1404,7 @@ mod tests {
         let config = test_config();
         let input = test_data_path("stopPlaces.xml");
         let output = std::env::temp_dir().join("test_convert_valid_json.ndjson");
-        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty()).unwrap();
+        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &HashSet::new()).unwrap();
         let lines: Vec<String> = std::fs::read_to_string(&output).unwrap().lines().map(String::from).collect();
         assert!(!lines.is_empty());
         for line in &lines {
@@ -1368,7 +1419,7 @@ mod tests {
         let config = test_config();
         let input = test_data_path("stopPlaces.xml");
         let output = std::env::temp_dir().join("test_convert_coords.ndjson");
-        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty()).unwrap();
+        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &HashSet::new()).unwrap();
         let lines: Vec<String> = std::fs::read_to_string(&output).unwrap().lines()
             .filter(|l| l.contains("NSR:StopPlace:"))
             .map(String::from).collect();
@@ -1384,7 +1435,7 @@ mod tests {
         let config = test_config();
         let input = test_data_path("stopPlaces.xml");
         let output = std::env::temp_dir().join("test_convert_authority.ndjson");
-        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty()).unwrap();
+        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &HashSet::new()).unwrap();
         let content = std::fs::read_to_string(&output).unwrap();
         assert!(content.contains("fare_zone_authority.FIN.Authority.FIN_ID"));
         assert!(content.contains("fare_zone_authority.RUT.Authority.RUT"));
@@ -1396,7 +1447,7 @@ mod tests {
         let config = test_config();
         let input = test_data_path("stopPlaces.xml");
         let output = std::env::temp_dir().join("test_convert_fare_zone_fallback.ndjson");
-        convert_all(&config, &input, &output, false, None, &UsageBoost::empty()).unwrap();
+        convert_all(&config, &input, &output, false, None, &UsageBoost::empty(), &HashSet::new()).unwrap();
         let content = std::fs::read_to_string(&output).unwrap();
         // RUT:FareZone:99 exists only as an NSR ref, so it proves the fallback ran.
         assert!(content.contains("fare_zone_id.RUT.FareZone.99"));
@@ -1420,7 +1471,7 @@ mod tests {
         let config = test_config();
         let input = test_data_path("stopPlaces.xml");
         let output = std::env::temp_dir().join("test_convert_parent_zones.ndjson");
-        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty()).unwrap();
+        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &HashSet::new()).unwrap();
         let content = std::fs::read_to_string(&output).unwrap();
 
         // RUT:FareZone:13 scopes to explicit stops and lists only the child 59649, so the hub
@@ -1453,7 +1504,7 @@ mod tests {
         let config = test_config();
         let input = test_data_path("stopPlaces.xml");
         let output = std::env::temp_dir().join("test_convert_zone_id_split.ndjson");
-        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty()).unwrap();
+        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &HashSet::new()).unwrap();
         let content = std::fs::read_to_string(&output).unwrap();
         // NSR's <TariffZoneRef>s land under tariff_zone_id.
         assert!(content.contains("tariff_zone_id.RUT.TariffZone.1"));
@@ -1474,7 +1525,7 @@ mod tests {
         let config = test_config();
         let input = test_data_path("stopPlaces.xml");
         let output = std::env::temp_dir().join("test_convert_zone_sources.ndjson");
-        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty()).unwrap();
+        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &HashSet::new()).unwrap();
         let content = std::fs::read_to_string(&output).unwrap();
 
         // Nydalen: NSR gives it RUT:TariffZone:1; the export adds RUT:FareZone:4 by outline
@@ -1498,7 +1549,7 @@ mod tests {
         let config = test_config();
         let input = test_data_path("stopPlaces.xml");
         let output = std::env::temp_dir().join("test_convert_transport_mode.ndjson");
-        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty()).unwrap();
+        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &HashSet::new()).unwrap();
         let content = std::fs::read_to_string(&output).unwrap();
         assert!(content.contains("\"transport_mode\":\"bus:localBus\""));
         let _ = std::fs::remove_file(&output);
@@ -1509,7 +1560,7 @@ mod tests {
         let config = test_config();
         let input = test_data_path("stopPlaces.xml");
         let output = std::env::temp_dir().join("test_convert_gid.ndjson");
-        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty()).unwrap();
+        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &HashSet::new()).unwrap();
         let content = std::fs::read_to_string(&output).unwrap();
         assert!(content.contains("county_gid.KVE"));
         assert!(content.contains("locality_gid.KVE"));
@@ -1522,7 +1573,7 @@ mod tests {
         let input = test_data_path("stopPlaces.xml");
 
         let baseline_out = std::env::temp_dir().join("test_usage_baseline.ndjson");
-        convert_all(&config, &input, &baseline_out, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty()).unwrap();
+        convert_all(&config, &input, &baseline_out, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &HashSet::new()).unwrap();
         let baseline = std::fs::read_to_string(&baseline_out).unwrap();
         let _ = std::fs::remove_file(&baseline_out);
 
@@ -1530,7 +1581,7 @@ mod tests {
         std::fs::write(&csv, "id;name;usage\nNSR:StopPlace:56697;Oslo S;5000000\n").unwrap();
         let usage = UsageBoost::load(Some(&csv), crate::common::usage::DEFAULT_ALPHA, crate::common::usage::DEFAULT_USAGE_FLOOR).unwrap();
         let boosted_out = std::env::temp_dir().join("test_usage_boosted.ndjson");
-        convert_all(&config, &input, &boosted_out, false, Some(&test_data_path("fareZones.xml")), &usage).unwrap();
+        convert_all(&config, &input, &boosted_out, false, Some(&test_data_path("fareZones.xml")), &usage, &HashSet::new()).unwrap();
         let boosted = std::fs::read_to_string(&boosted_out).unwrap();
         let _ = std::fs::remove_file(&boosted_out);
         let _ = std::fs::remove_file(&csv);

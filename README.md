@@ -55,6 +55,14 @@ section's `input` says where the data comes from:
 "belagenhet": { "input": { "municipality": "all" }, ... }             // Lantmäteriet download
 ```
 
+`osm` and `stopPlace` also take a list of inputs, converted in order with the same settings
+(`minLines` applies to each). An OSM object already written by an earlier input, as happens
+where two country extracts overlap, is skipped:
+
+```json
+"osm": { "input": [{ "url": ".../norway-latest.osm.pbf" }, { "url": ".../sweden-latest.osm.pbf" }], ... }
+```
+
 To skip a source, omit its section entirely; a section without an `input` is a hard error.
 `region` and `municipality` trigger downloads (`regions` and `municipalities` list the valid
 codes); `municipality` needs Lantmäteriet Geotorget credentials in `LANTMATERIET_USER` /
@@ -104,6 +112,25 @@ Stop place fare zones come from their own NeTEx export rather than from the stop
 into each stop and the authorities in the same input's `<FareFrame>`, which on a full run
 reproduces the export exactly. That mirror is due to disappear, so set `fareZones` for anything
 long-lived. The two never mix.
+
+### Stop place dedupe
+
+A stop registered in two registers (NSR and SSR at the Swedish border) can be listed in a CSV
+of `id_a,id_b,preferred_id[,...]` rows after a header. `build` drops the id that is not
+preferred, unless the preferred id is missing from every input, so a stale row never removes a
+stop altogether; rows kept that way are printed as a warning. A row that contradicts another,
+or chains through it, is an error. A child whose parent is dropped becomes a standalone stop,
+and a group whose members are all dropped is left out. Dedupe runs in `build` only.
+
+```json
+"stopPlace": {
+  "input": [{ "url": ".../Current_latest.zip" }, { "url": ".../stops_sweden_latest.zip" }],
+  "dedupe": { "input": { "url": "https://raw.githubusercontent.com/entur/geocoder-data/main/dedupe-no-se.csv" } },
+  "domesticCountries": ["no", "se"]
+}
+```
+
+`domesticCountries` (default `["no"]`) lists the countries exempt from `foreignImportanceFactor`.
 
 ### Usage boost
 
