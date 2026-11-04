@@ -23,7 +23,7 @@ pub fn convert_all(
     usage: &UsageBoost,
 ) -> Result<usize, Box<dyn std::error::Error>> {
     let belagenhet = config.belagenhet.as_ref().ok_or("config is missing the required `belagenhet` section")?;
-    let importance_calc = ImportanceCalculator::new(usage);
+    let importance_calc = ImportanceCalculator::new(usage).with_country_factors(&config.country_importance_factors);
 
     let all_addresses = parse_gpkg(input)?;
 
@@ -77,7 +77,7 @@ fn convert_address(
     importance_calc: &ImportanceCalculator,
 ) -> NominatimPlace {
     let coord = geo::convert_sweref99tm_to_lat_lon(addr.easting, addr.northing);
-    let country = geo::get_country(&coord).unwrap_or_else(Country::se);
+    let country = Country::se();
 
     let street_name = addr.street_or_place_name();
     let housenumber = addr.housenumber();
@@ -101,9 +101,8 @@ fn convert_address(
     if let Some(gid) = &c_gid { indexed_cats.push(county_ids_category(gid)); }
     if let Some(gid) = &l_gid { indexed_cats.push(locality_ids_category(gid)); }
 
-    let importance = RawNumber::from_f64_6dp(
-        importance_calc.calculate_importance_for(&id, belagenhet.address_popularity)
-    );
+    let importance =
+        RawNumber::from_f64_6dp(importance_calc.calculate_importance_in(&id, belagenhet.address_popularity, Some(&country)));
 
     let postort = addr.postort.as_deref().unwrap_or("");
 
@@ -164,7 +163,7 @@ fn convert_street(
 ) -> NominatimPlace {
     let addr = &agg.representative;
     let coord = geo::convert_sweref99tm_to_lat_lon(agg.sum_east / agg.count as f64, agg.sum_north / agg.count as f64);
-    let country = geo::get_country(&coord).unwrap_or_else(Country::se);
+    let country = Country::se();
     let street_name = addr.street_or_place_name().unwrap_or_default();
     let kommun = addr.kommunkod.as_deref().unwrap_or("");
 
@@ -185,9 +184,8 @@ fn convert_street(
     if let Some(gid) = &c_gid { indexed_cats.push(county_ids_category(gid)); }
     if let Some(gid) = &l_gid { indexed_cats.push(locality_ids_category(gid)); }
 
-    let importance = RawNumber::from_f64_6dp(
-        importance_calc.calculate_importance_for(&id, belagenhet.street_popularity)
-    );
+    let importance =
+        RawNumber::from_f64_6dp(importance_calc.calculate_importance_in(&id, belagenhet.street_popularity, Some(&country)));
 
     let postort = addr.postort.as_deref().unwrap_or("");
 
@@ -230,5 +228,26 @@ fn convert_street(
                 ..Default::default()
             },
         }],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::parse::tests::test_addr;
+    use crate::common::importance::CountryFactors;
+
+    #[test]
+    fn country_factor_scales_addresses_and_streets() {
+        let config: BelagenhetConfig = serde_json::from_str(r#"{ "input": { "municipality": "all" } }"#).unwrap();
+        let usage = UsageBoost::empty();
+        let factors: CountryFactors = serde_json::from_str(r#"{"se": 0.5}"#).unwrap();
+        let plain = ImportanceCalculator::new(&usage);
+        let scaled = ImportanceCalculator::new(&usage).with_country_factors(&factors);
+        let addr = test_addr(|a| { a.easting = 674_000.0; a.northing = 6_580_000.0; });
+        let street = StreetAgg { representative: addr.clone(), sum_east: 674_000.0, sum_north: 6_580_000.0, count: 1 };
+        let imp = |p: NominatimPlace| p.content[0].importance.0.parse::<f64>().unwrap();
+        assert!((imp(convert_address(&addr, &config, &scaled)) - imp(convert_address(&addr, &config, &plain)) * 0.5).abs() <= 1e-6);
+        assert!((imp(convert_street(&street, &config, &scaled)) - imp(convert_street(&street, &config, &plain)) * 0.5).abs() <= 1e-6);
     }
 }

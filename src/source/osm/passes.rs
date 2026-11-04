@@ -324,7 +324,8 @@ impl OsmConverter {
             pass4::EntranceOverrides::default()
         };
 
-        let importance_calc = ImportanceCalculator::new(usage);
+        let importance_calc =
+            ImportanceCalculator::new(usage).with_country_factors(&self.config.country_importance_factors);
         // Resolved once here; the osm section is guaranteed present when converting osm.
         let rank_address = &self
             .config

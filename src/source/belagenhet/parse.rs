@@ -264,10 +264,10 @@ fn parse_gpkg_point_geometry(blob: &[u8]) -> Result<(f64, f64), Box<dyn std::err
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    fn test_addr(overrides: impl FnOnce(&mut BelagenhetAdress)) -> BelagenhetAdress {
+    pub(crate) fn test_addr(overrides: impl FnOnce(&mut BelagenhetAdress)) -> BelagenhetAdress {
         let mut addr = BelagenhetAdress {
             objektidentitet: "test-uuid".to_string(),
             adressplatstyp: "Gatuadressplats".to_string(),

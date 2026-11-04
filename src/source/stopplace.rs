@@ -1,6 +1,7 @@
 mod convert;
 pub(crate) mod dedupe;
 pub(crate) mod farezone;
+pub(crate) mod registers;
 mod popularity;
 pub(crate) mod xml;
 
@@ -17,9 +18,9 @@ pub fn convert(
     convert::convert_all(config, input, output, is_appending, fare_zones, usage, skip)
 }
 
-/// Ids of the stop places `convert` would emit from `input`, for `dedupe::skip_set`.
-pub fn stop_place_ids(input: &std::path::Path) -> Result<std::collections::HashSet<String>, Box<dyn std::error::Error>> {
-    Ok(convert::convertible_ids(&xml::parse_netex(&std::fs::read_to_string(input)?)?))
+/// The stop places `convert` would emit from `input`, for `registers::skip_set` and `dedupe::skip_set`.
+pub fn stop_points(input: &std::path::Path) -> Result<Vec<registers::StopPoint>, Box<dyn std::error::Error>> {
+    Ok(convert::convertible_points(&xml::parse_netex(&std::fs::read_to_string(input)?)?))
 }
 
 #[cfg(test)]
