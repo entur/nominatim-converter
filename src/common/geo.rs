@@ -48,6 +48,17 @@ static BOUNDARIES: LazyLock<CountryBoundaries> = LazyLock::new(|| {
         .expect("Failed to load country boundaries")
 });
 
+/// Approximate distance in metres between two coordinates (equirectangular projection).
+/// Fast enough for spatial-index scans; accurate to well under a metre at the OSM
+/// pipeline's ~100 m lookup radius.
+pub fn distance_meters(a: &Coordinate, b: &Coordinate) -> f64 {
+    let lat_scale = 111_000.0;
+    let lon_scale = 111_000.0 * a.lat.to_radians().cos();
+    let dx = (b.lon - a.lon) * lon_scale;
+    let dy = (b.lat - a.lat) * lat_scale;
+    (dx * dx + dy * dy).sqrt()
+}
+
 /// Country detection from coordinates using country-boundaries crate.
 pub fn get_country(coord: &Coordinate) -> Option<Country> {
     let latlon = LatLon::new(coord.lat, coord.lon).ok()?;
@@ -63,6 +74,13 @@ pub fn get_country(coord: &Coordinate) -> Option<Country> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn distance_meters_small_offset() {
+        // 0.0001 deg lat is ~11.1 m.
+        let d = distance_meters(&Coordinate::new(59.9, 10.7), &Coordinate::new(59.9001, 10.7));
+        assert!((d - 11.1).abs() < 0.5, "expected ~11.1 m, got {d}");
+    }
 
     #[test]
     fn test_zagreb_is_croatia() {

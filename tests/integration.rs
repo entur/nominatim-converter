@@ -225,6 +225,52 @@ fn build_converts_input_lists_and_dedupes_across_them() {
 }
 
 #[test]
+fn build_drops_register_copies_but_never_both_sides_of_a_dedupe_pair() {
+    let tmp = |suffix: &str| std::env::temp_dir().join(format!("nominatim-build-{}-reg-{suffix}", std::process::id()));
+    let netex = |stops: &[(&str, f64, f64)]| {
+        let body: String = stops.iter().map(|(id, lat, lon)| format!(
+            r#"<StopPlace id="{id}"><Name>{id}</Name><Centroid><Location><Longitude>{lon}</Longitude><Latitude>{lat}</Latitude></Location></Centroid></StopPlace>"#
+        )).collect();
+        format!("<PublicationDelivery>{body}</PublicationDelivery>")
+    };
+    let (nsr, ssr, csv) = (tmp("nsr.xml"), tmp("ssr.xml"), tmp("dedupe.csv"));
+    std::fs::write(&nsr, netex(&[("NSR:StopPlace:10", 59.9104, 10.7531), ("NSR:StopPlace:11", 59.4318, 10.6573)])).unwrap();
+    // 1: copy of NSR 10. 2: in Norway with no NSR stop nearby. 3: copy of NSR 11, preferred by the CSV.
+    std::fs::write(&ssr, netex(&[("SSR:StopPlace:1", 59.9110, 10.7535), ("SSR:StopPlace:2", 63.33701, 12.05964), ("SSR:StopPlace:3", 59.4319, 10.6574)])).unwrap();
+    std::fs::write(&csv, "no,se,preferred\nNSR:StopPlace:11,SSR:StopPlace:3,SSR:StopPlace:3\n").unwrap();
+    let config_json = format!(
+        r#"{{
+  "stopPlace": {{
+    "input": [{{ "file": "{nsr}" }}, {{ "file": "{ssr}" }}],
+    "dedupe": {{ "input": {{ "file": "{csv}" }} }},
+    "countryRegisters": {{ "no": "nsr" }},
+    "defaultValue": 50, "rankAddress": 30,
+    "stopTypeFactors": {{}}, "interchangeFactors": {{}}
+  }}
+}}"#,
+        nsr = nsr.display(),
+        ssr = ssr.display(),
+        csv = csv.display(),
+    );
+    let config = write_temp_config("build-registers", &config_json);
+    let output = temp_output("build-registers");
+    let (success, _, stderr) = run_converter(&["build", "-c", config.to_str().unwrap(), "-o", output.to_str().unwrap(), "-f"]);
+    assert!(success, "build failed: {stderr}");
+    assert!(stderr.contains("leaving out 2 stop places in no with a nsr stop within 100 m: SSR:StopPlace:1, SSR:StopPlace:3"), "{stderr}");
+    assert!(stderr.contains("kept 1 stop places in no with no nsr stop nearby: SSR:StopPlace:2"), "{stderr}");
+
+    let lines = read_ndjson(&output);
+    let ids: std::collections::HashSet<&str> = lines.iter()
+        .filter_map(|l| l["content"][0]["extra"]["id"].as_str()).collect();
+    assert_eq!(ids, ["NSR:StopPlace:10", "NSR:StopPlace:11", "SSR:StopPlace:2"].into(), "{ids:?}");
+
+    cleanup(&output);
+    for path in [&config, &nsr, &ssr, &csv] {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[test]
 fn build_skips_omitted_sources() {
     // The headline behavior: a config with only some source sections builds cleanly and
     // produces exactly that subset (this is the sweden-test deployment shape).

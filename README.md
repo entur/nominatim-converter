@@ -126,11 +126,31 @@ and a group whose members are all dropped is left out. Dedupe runs in `build` on
 "stopPlace": {
   "input": [{ "url": ".../Current_latest.zip" }, { "url": ".../stops_sweden_latest.zip" }],
   "dedupe": { "input": { "url": "https://raw.githubusercontent.com/entur/geocoder-data/main/dedupe-no-se.csv" } },
-  "domesticCountries": ["no", "se"]
+  "countryRegisters": { "no": "nsr" }
 }
 ```
 
-`domesticCountries` (default `["no"]`) lists the countries exempt from `foreignImportanceFactor`.
+`countryRegisters` maps a country to the register (id codespace) that owns its stops. A stop
+another register has inside that country, by coordinates, is dropped when an owner stop lies
+within 100 m, which catches SSR's copies of Norwegian stations whatever their ids; one with no
+owner stop nearby is kept. Both lists are printed. It is an error when no input has an owner
+stop, so a misspelled register can't empty a country. Dropped stops count as missing for dedupe,
+so a pair never loses both sides. `build` only, like dedupe.
+
+### Country importance factors
+
+A top-level `countryImportanceFactors` map scales importance by country for stops, groups, OSM
+entities and belagenhet addresses, after normalization and the group cap. Keys are alpha-2
+codes or `*` for every other country; factors must be in (0, 1]. Entities with no country are
+unchanged. Prod keeps foreign hubs like Berlin below Norwegian places, and nordic also ranks
+Swedish hits below Norwegian ones:
+
+```json
+"countryImportanceFactors": { "*": 0.5, "no": 1.0, "se": 0.6 }
+```
+
+Importance is one additive term in Photon's rank, so a factor settles near-ties but does not
+override a large importance gap.
 
 ### Usage boost
 

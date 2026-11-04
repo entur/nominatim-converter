@@ -31,19 +31,8 @@ const GOSP_IMPORTANCE_CAP: f64 = 0.92;
 
 use super::farezone::FareZones;
 use super::popularity::calculate_stop_popularity;
+use super::registers::StopPoint;
 use super::xml::*;
-
-/// Apply the configured foreign importance penalty. A stop/GoSP resolved to a country outside
-/// `domestic` has its importance multiplied by `factor` (1.0 = no penalty), then clamped
-/// to `[IMPORTANCE_FLOOR, 1.0]` so the result stays a valid Photon importance even if `factor`
-/// is misconfigured above 1.0.
-fn apply_foreign_penalty(importance: f64, country: &Country, factor: f64, domestic: &[String]) -> f64 {
-    if domestic.iter().any(|c| c.eq_ignore_ascii_case(&country.alpha2)) {
-        importance
-    } else {
-        (importance * factor).clamp(IMPORTANCE_FLOOR, 1.0)
-    }
-}
 
 pub fn convert_all(
     config: &Config,
@@ -58,7 +47,7 @@ pub fn convert_all(
     let xml = std::fs::read_to_string(input)?;
     let result = parse_netex(&xml)?;
     let zone_source = ZoneSource::resolve(fare_zone_input, &result)?;
-    let importance_calc = ImportanceCalculator::new(usage);
+    let importance_calc = ImportanceCalculator::new(usage).with_country_factors(&config.country_importance_factors);
 
     // Build child stops map (parentRef -> child stop places, in document order). A parent's own
     // types, weighting and names are all derived from it.
@@ -247,15 +236,18 @@ impl StopPlaceRole {
 }
 
 /// The register an id belongs to, by its codespace: `nsr` for `NSR:StopPlace:1`, `ssr` for SSR's.
-fn register(id: &str) -> String {
+pub(crate) fn register(id: &str) -> String {
     id.split(':').next().unwrap_or(id).to_ascii_lowercase()
 }
 
-/// Ids of the stop places `convert_stop_place` emits; they need a centroid and a name.
-pub(crate) fn convertible_ids(result: &ParseResult) -> HashSet<String> {
+/// The stop places `convert_stop_place` emits; they need a centroid and a name.
+pub(crate) fn convertible_points(result: &ParseResult) -> Vec<StopPoint> {
     result.stop_places.iter()
-        .filter(|sp| sp.centroid.is_some() && sp.name.is_some())
-        .map(|sp| sp.id.clone())
+        .filter(|sp| sp.name.is_some())
+        .filter_map(|sp| sp.centroid.as_ref().map(|c| StopPoint {
+            id: sp.id.clone(),
+            coord: Coordinate::new(c.location.latitude, c.location.longitude),
+        }))
         .collect()
 }
 
@@ -278,12 +270,9 @@ pub(crate) fn convert_stop_place(
     let country = determine_country(topo_places, sp, &coord);
     let child_types: Vec<&str> =
         child_stops.iter().filter_map(|c| c.stop_place_type.as_deref()).collect();
-    let importance = RawNumber::from_f64_6dp(apply_foreign_penalty(
-        importance_calc.calculate_importance(popularity as f64),
-        &country,
-        stop_place.foreign_importance_factor,
-        &stop_place.domestic_countries,
-    ));
+    let importance = RawNumber::from_f64_6dp(
+        importance_calc.apply_country_factor(importance_calc.calculate_importance(popularity as f64), Some(&country)),
+    );
     // A child whose parent is skipped stands alone; as a child it would be hidden by default.
     let has_parent = sp.parent_site_ref.as_ref().is_some_and(|p| !skip.contains(&p.ref_));
     let role = classify_role(&child_types, has_parent);
@@ -592,7 +581,7 @@ pub(crate) fn convert_gosp(
         SECONDARY_GOSP_IMPORTANCE.max(IMPORTANCE_FLOOR)
     } else {
         let capped = importance_calc.calculate_importance_for(&gosp.id, gosp_pop).min(GOSP_IMPORTANCE_CAP);
-        apply_foreign_penalty(capped, &country, stop_place.foreign_importance_factor, &stop_place.domestic_countries)
+        importance_calc.apply_country_factor(capped, Some(&country))
     };
     let importance = RawNumber::from_f64_6dp(raw_importance);
 
@@ -811,6 +800,7 @@ pub(crate) fn collect_transport_modes(sp: &StopPlaceXml, child_stops: &[&StopPla
 mod tests {
     use super::*;
     use super::super::tests::helpers::*;
+    use crate::common::importance::CountryFactors;
 
     static EMPTY_USAGE: std::sync::LazyLock<UsageBoost> =
         std::sync::LazyLock::new(UsageBoost::empty);
@@ -827,39 +817,6 @@ mod tests {
         content.lines()
             .find(|l| l.contains(&format!("\"id\":\"{stop_id}\"")))
             .unwrap_or_else(|| panic!("no output line for {stop_id}"))
-    }
-
-    // ===== Foreign importance penalty tests =====
-
-    fn norway_only() -> Vec<String> { vec!["no".to_string()] }
-
-    #[test]
-    fn foreign_penalty_leaves_norwegian_untouched() {
-        assert_eq!(apply_foreign_penalty(0.92, &Country::no(), 0.6, &norway_only()), 0.92);
-    }
-
-    #[test]
-    fn foreign_penalty_skips_all_domestic_countries() {
-        let nordic = vec!["no".to_string(), "SE".to_string()];
-        assert_eq!(apply_foreign_penalty(0.92, &Country::se(), 0.6, &nordic), 0.92);
-    }
-
-    #[test]
-    fn foreign_penalty_scales_non_norwegian() {
-        // A foreign GoSP at the cap (0.92) with a 0.6 factor lands below a domestic city;
-        // Country::se() stands in for any non-Norwegian country.
-        assert!((apply_foreign_penalty(0.92, &Country::se(), 0.6, &norway_only()) - 0.552).abs() < 1e-9);
-    }
-
-    #[test]
-    fn foreign_penalty_floors_result() {
-        // A tiny foreign importance times a small factor can't fall below the floor.
-        assert_eq!(apply_foreign_penalty(IMPORTANCE_FLOOR, &Country::se(), 0.1, &norway_only()), IMPORTANCE_FLOOR);
-    }
-
-    #[test]
-    fn foreign_penalty_factor_one_is_noop() {
-        assert_eq!(apply_foreign_penalty(0.5, &Country::se(), 1.0, &norway_only()), 0.5);
     }
 
     // ===== Transport mode formatting tests =====
@@ -1321,18 +1278,16 @@ mod tests {
     }
 
     #[test]
-    fn convert_gosp_applies_foreign_penalty_after_cap() {
-        // End-to-end check that apply_foreign_penalty is wired into convert_gosp: a saturating
-        // GoSP in a non-Norwegian country (Stockholm centroid) is capped at GOSP_IMPORTANCE_CAP
-        // and THEN penalized, so the two compose: 0.92 * 0.6 = 0.552.
+    fn convert_gosp_applies_country_factor_after_cap() {
+        // A saturating GoSP at a Stockholm centroid is capped, then scaled: 0.92 * 0.6 = 0.552.
         let sp: StopPlaceConfig = serde_json::from_str(
             r#"{ "input": { "file": "unused" }, "defaultValue": 50, "rankAddress": 30,
-                 "foreignImportanceFactor": 0.6,
                  "stopTypeFactors": { "railStation": 2.0, "busStation": 2.0 },
                  "interchangeFactors": { "preferredInterchange": 10.0 },
                  "fareZones": { "input": { "file": "unused" } } }"#,
         ).unwrap();
-        let importance_calc = ImportanceCalculator::new(&EMPTY_USAGE);
+        let factors: CountryFactors = serde_json::from_str(r#"{"*": 0.6, "no": 1.0}"#).unwrap();
+        let importance_calc = ImportanceCalculator::new(&EMPTY_USAGE).with_country_factors(&factors);
 
         let a = make_stop_place("NSR:StopPlace:337", "T-Centralen", Some("rail"), Some("railStation"));
         let b = make_stop_place("NSR:StopPlace:58293", "Cityterminalen", Some("bus"), Some("busStation"));
@@ -1358,7 +1313,27 @@ mod tests {
         let result = convert_gosp(&sp, &importance_calc, &gosp, &HashMap::new(), &pops, &stop_by_id, false).unwrap();
 
         assert_eq!(result.content[0].importance.0, RawNumber::from_f64_6dp(GOSP_IMPORTANCE_CAP * 0.6).0,
-            "foreign GoSP importance must be the cap (0.92) times foreignImportanceFactor (0.6)");
+            "foreign GoSP importance must be the cap (0.92) times its country factor (0.6)");
+    }
+
+    #[test]
+    fn convert_stop_place_applies_country_factor() {
+        let config = test_config();
+        let stop_place = config.stop_place.as_ref().unwrap();
+        let factors: CountryFactors = serde_json::from_str(r#"{"se": 0.5}"#).unwrap();
+        let plain = ImportanceCalculator::new(&EMPTY_USAGE);
+        let scaled = ImportanceCalculator::new(&EMPTY_USAGE).with_country_factors(&factors);
+        let zones = HashMap::new();
+        let importance = |calc: &ImportanceCalculator, lat: f64, lon: f64| {
+            let mut sp = make_stop_place("SSR:StopPlace:1", "Stop", Some("bus"), None);
+            sp.centroid = Some(CentroidXml { location: LocationXml { longitude: lon, latitude: lat } });
+            let place = convert_stop_place(stop_place, calc, &sp, &HashMap::new(), &ZoneSource::NsrRefs(&zones),
+                1_000, &[], &HashSet::new()).unwrap();
+            place.content[0].importance.0.parse::<f64>().unwrap()
+        };
+        let (gothenburg, oslo) = ((57.709, 11.973), (59.911, 10.753));
+        assert!((importance(&scaled, gothenburg.0, gothenburg.1) - importance(&plain, gothenburg.0, gothenburg.1) * 0.5).abs() <= 1e-6);
+        assert_eq!(importance(&scaled, oslo.0, oslo.1), importance(&plain, oslo.0, oslo.1));
     }
 
     #[test]

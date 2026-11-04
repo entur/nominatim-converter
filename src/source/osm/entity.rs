@@ -257,7 +257,7 @@ impl<'a> OsmEntityConverter<'a> {
         );
 
         let rank_address = self.determine_rank_address(tags);
-        let importance = self.calculate_importance(tags, &osm_id);
+        let importance = self.calculate_importance(tags, &osm_id, country.as_ref());
 
         let content = PlaceContent {
             place_id: as_place_id(&osm_id),
@@ -333,9 +333,9 @@ impl<'a> OsmEntityConverter<'a> {
         }
     }
 
-    fn calculate_importance(&self, tags: &BTreeMap<&str, &str>, id: &str) -> RawNumber {
+    fn calculate_importance(&self, tags: &BTreeMap<&str, &str>, id: &str, country: Option<&Country>) -> RawNumber {
         let popularity = self.popularity_calculator.calculate_popularity(tags);
-        RawNumber::from_f64_6dp(self.importance_calc.calculate_importance_for(id, popularity))
+        RawNumber::from_f64_6dp(self.importance_calc.calculate_importance_in(id, popularity, country))
     }
 }
 

@@ -1,3 +1,5 @@
+use crate::common::importance::CountryFactors;
+use crate::source::stopplace::registers::CountryRegisters;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -17,6 +19,11 @@ pub struct Config {
     /// Usage-driven popularity boost. Like a source section: present only to enable the
     /// boost, and when present it must carry an `input` (where the CSV lives). Omit to skip.
     pub usage: Option<UsageConfig>,
+    /// Importance multiplier per country for stops, GoSPs, OSM and belagenhet, applied after
+    /// normalization and the GoSP cap. Foreign hubs (the Berlin stop group) and Swedish hits in a
+    /// mixed index then lose near-ties on a bare prefix like "ber"; importance is one additive
+    /// term in Photon's rank, so it does not override large gaps. See [`CountryFactors`].
+    pub country_importance_factors: CountryFactors,
 }
 
 /// Where a source's data comes from, for the config-driven `build` command.
@@ -172,17 +179,6 @@ pub struct StopPlaceConfig {
     pub input: SourceInputs,
     pub default_value: i64,
     pub rank_address: i32,
-    /// Multiplier applied to the importance of stops/GoSPs that resolve to a country outside
-    /// `domesticCountries`, so foreign hubs (e.g. the Berlin stop group) don't outrank domestic
-    /// places on a bare prefix like "ber". `1.0` = no penalty. Applied after normalization and the GoSP cap,
-    /// then clamped to the valid importance range. Importance is only one additive term in
-    /// Photon's final rank, so this mainly breaks near-ties; ~0.6-0.7 puts a capped foreign hub
-    /// (0.92) below a Norwegian city (~0.72). Validate changes with an autocomplete acceptance test.
-    #[serde(default = "default_foreign_importance_factor")]
-    pub foreign_importance_factor: f64,
-    /// ISO alpha-2 codes exempt from `foreignImportanceFactor`, any case.
-    #[serde(default = "default_domestic_countries")]
-    pub domestic_countries: Vec<String>,
     pub stop_type_factors: std::collections::HashMap<String, f64>,
     pub interchange_factors: std::collections::HashMap<String, f64>,
     /// Group-of-stop-places tuning. GoSPs are parsed from the same StopPlace NeTEx input and
@@ -196,6 +192,9 @@ pub struct StopPlaceConfig {
     /// Cross-register duplicates; see `source::stopplace::dedupe`.
     #[serde(default)]
     pub dedupe: Option<DedupeConfig>,
+    /// See [`CountryRegisters`].
+    #[serde(default)]
+    pub country_registers: CountryRegisters,
     #[serde(default)]
     pub min_lines: Option<usize>,
 }
@@ -235,9 +234,7 @@ pub struct GroupOfStopPlacesConfig {
 
 fn default_gosp_rank() -> i32 { 30 }
 
-fn default_foreign_importance_factor() -> f64 { 1.0 }
 
-fn default_domestic_countries() -> Vec<String> { vec!["no".to_string()] }
 
 impl Default for GroupOfStopPlacesConfig {
     fn default() -> Self {
@@ -375,18 +372,29 @@ mod tests {
     }
 
     #[test]
-    fn test_stop_place_dedupe_and_domestic_countries() {
+    fn test_stop_place_dedupe() {
         let sp: StopPlaceConfig = serde_json::from_str(
             r#"{ "input": { "file": "x.zip" }, "defaultValue": 50, "rankAddress": 30,
                  "stopTypeFactors": {}, "interchangeFactors": {},
-                 "domesticCountries": ["no", "se"], "dedupe": { "input": { "file": "d.csv" } } }"#,
+                 "dedupe": { "input": { "file": "d.csv" } } }"#,
         ).unwrap();
-        assert_eq!(sp.domestic_countries, ["no", "se"]);
         assert_eq!(sp.dedupe.unwrap().input, SourceInput::File("d.csv".into()));
         let config: Config = serde_json::from_str(TEST_CONFIG).unwrap();
         let sp = config.stop_place.unwrap();
-        assert_eq!(sp.domestic_countries, ["no"]);
         assert!(sp.dedupe.is_none());
+        assert!(sp.country_registers.is_empty());
+        assert_eq!(config.country_importance_factors, CountryFactors::default());
+    }
+
+    #[test]
+    fn test_country_importance_factors_and_registers() {
+        let config: Config = serde_json::from_str(
+            r#"{ "countryImportanceFactors": { "se": 0.6 },
+                 "stopPlace": { "input": { "file": "x.zip" }, "defaultValue": 50, "rankAddress": 30,
+                   "stopTypeFactors": {}, "interchangeFactors": {}, "countryRegisters": { "no": "nsr" } } }"#,
+        ).unwrap();
+        assert_ne!(config.country_importance_factors, CountryFactors::default());
+        assert!(!config.stop_place.unwrap().country_registers.is_empty());
     }
 
     #[test]

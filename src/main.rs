@@ -449,16 +449,19 @@ fn run_build(args: BuildArgs, opts: RunOptions) -> Result<(), Box<dyn std::error
     }
     if let Some(stop_place) = cfg.stop_place.as_ref() {
         let inputs = resolve_sources(&stop_place.input, "stopplace", Some("*.xml"), opts)?;
-        let skip = match dedupe_resolved.as_ref() {
-            Some(csv) => {
-                let mut present = HashSet::new();
-                for (_, input) in &inputs {
-                    present.extend(source::stopplace::stop_place_ids(input.path())?);
-                }
-                source::stopplace::dedupe::skip_set(csv.path(), &present)?
+        let mut skip = HashSet::new();
+        if dedupe_resolved.is_some() || !stop_place.country_registers.is_empty() {
+            let mut points = Vec::new();
+            for (_, input) in &inputs {
+                points.extend(source::stopplace::stop_points(input.path())?);
             }
-            None => HashSet::new(),
-        };
+            skip = source::stopplace::registers::skip_set(&points, &stop_place.country_registers)?;
+            // Without the stops dropped above, so a CSV row whose preferred stop was dropped keeps the other.
+            if let Some(csv) = dedupe_resolved.as_ref() {
+                let present = points.into_iter().map(|p| p.id).filter(|id| !skip.contains(id)).collect();
+                skip.extend(source::stopplace::dedupe::skip_set(csv.path(), &present)?);
+            }
+        }
         let fare_zone_path = fare_zones_resolved.as_ref().map(ResolvedInput::path);
         for (label, input) in &inputs {
             run_one_source(label, input.path(), output, &cfg, stop_place.min_lines, &usage, |c, i, o, a, u| {
