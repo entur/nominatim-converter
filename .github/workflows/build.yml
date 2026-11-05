@@ -15,7 +15,7 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             artifact: nominatim-converter-linux-x86_64
           - os: macos-latest
