@@ -9,7 +9,7 @@ use crate::common::geo;
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashSet};
 
-const MATCH_RADIUS_M: f64 = 100.0;
+const MATCH_RADIUS_M: f64 = 200.0;
 
 pub struct StopPoint {
     pub id: String,
@@ -99,8 +99,11 @@ mod tests {
             stop("SSR:StopPlace:2", 63.33701, 12.05964), // Storlien gräns, no NSR stop nearby
             stop("SSR:StopPlace:3", 57.709, 11.973), // Göteborg, outside Norway
             stop("NSR:StopPlace:4", 58.936, 11.172), // Strömstad, NSR in Sweden
+            stop("SSR:StopPlace:5", 59.91175, 10.7531), // ~150 m away
+            stop("SSR:StopPlace:6", 59.91265, 10.7531), // ~250 m away
         ];
-        assert_eq!(skip_set(&stops, &norway_nsr()).unwrap(), HashSet::from(["SSR:StopPlace:1".to_string()]));
+        let expected = HashSet::from(["SSR:StopPlace:1".to_string(), "SSR:StopPlace:5".to_string()]);
+        assert_eq!(skip_set(&stops, &norway_nsr()).unwrap(), expected);
     }
 
     #[test]

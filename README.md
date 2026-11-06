@@ -132,7 +132,7 @@ and a group whose members are all dropped is left out. Dedupe runs in `build` on
 
 `countryRegisters` maps a country to the register (id codespace) that owns its stops. A stop
 another register has inside that country, by coordinates, is dropped when an owner stop lies
-within 100 m, which catches SSR's copies of Norwegian stations whatever their ids; one with no
+within 200 m, which catches SSR's copies of Norwegian stations whatever their ids; one with no
 owner stop nearby is kept. Both lists are printed. It is an error when no input has an owner
 stop, so a misspelled register can't empty a country. Dropped stops count as missing for dedupe,
 so a pair never loses both sides. `build` only, like dedupe.

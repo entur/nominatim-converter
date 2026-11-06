@@ -256,7 +256,7 @@ fn build_drops_register_copies_but_never_both_sides_of_a_dedupe_pair() {
     let output = temp_output("build-registers");
     let (success, _, stderr) = run_converter(&["build", "-c", config.to_str().unwrap(), "-o", output.to_str().unwrap(), "-f"]);
     assert!(success, "build failed: {stderr}");
-    assert!(stderr.contains("leaving out 2 stop places in no with a nsr stop within 100 m: SSR:StopPlace:1, SSR:StopPlace:3"), "{stderr}");
+    assert!(stderr.contains("leaving out 2 stop places in no with a nsr stop within 200 m: SSR:StopPlace:1, SSR:StopPlace:3"), "{stderr}");
     assert!(stderr.contains("kept 1 stop places in no with no nsr stop nearby: SSR:StopPlace:2"), "{stderr}");
 
     let lines = read_ndjson(&output);
