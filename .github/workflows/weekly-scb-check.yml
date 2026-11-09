@@ -2,7 +2,7 @@ name: Weekly SCB data check
 
 on:
   schedule:
-    - cron: "0 6 * * 1" # Every Monday at 06:00 UTC
+    - cron: "45 1 * * 1" # Every Monday at 01:45 UTC
   workflow_dispatch:
 
 env:
