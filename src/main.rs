@@ -455,7 +455,7 @@ fn run_build(args: BuildArgs, opts: RunOptions) -> Result<(), Box<dyn std::error
             for (_, input) in &inputs {
                 points.extend(source::stopplace::stop_points(input.path())?);
             }
-            skip = source::stopplace::registers::skip_set(&points, &stop_place.country_registers)?;
+            skip = source::stopplace::registers::skip_set(&points, &stop_place.country_registers, &stop_place.country_registers_keep_modes)?;
             // Without the stops dropped above, so a CSV row whose preferred stop was dropped keeps the other.
             if let Some(csv) = dedupe_resolved.as_ref() {
                 let present = points.into_iter().map(|p| p.id).filter(|id| !skip.contains(id)).collect();

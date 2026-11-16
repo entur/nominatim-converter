@@ -137,6 +137,10 @@ owner stop nearby is kept. Both lists are printed. It is an error when no input 
 stop, so a misspelled register can't empty a country. Dropped stops count as missing for dedupe,
 so a pair never loses both sides. `build` only, like dedupe.
 
+`countryRegistersKeepModes` also keeps a stop when it, or one of its children, has a listed mode
+that no owner stop within 200 m has. SSR has only a bus stop at most Swedish airports, so
+`["air"]` keeps NSR's airport hubs there. A mode no input stop has is an error.
+
 ### Country importance factors
 
 A top-level `countryImportanceFactors` map scales importance by country for stops, groups, OSM
