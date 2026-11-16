@@ -242,11 +242,21 @@ pub(crate) fn register(id: &str) -> String {
 
 /// The stop places `convert_stop_place` emits; they need a centroid and a name.
 pub(crate) fn convertible_points(result: &ParseResult) -> Vec<StopPoint> {
+    let mut child_modes: HashMap<&str, Vec<&String>> = HashMap::new();
+    for sp in &result.stop_places {
+        if let (Some(parent), Some(mode)) = (&sp.parent_site_ref, &sp.transport_mode) {
+            child_modes.entry(parent.ref_.as_str()).or_default().push(mode);
+        }
+    }
     result.stop_places.iter()
         .filter(|sp| sp.name.is_some())
-        .filter_map(|sp| sp.centroid.as_ref().map(|c| StopPoint {
-            id: sp.id.clone(),
-            coord: Coordinate::new(c.location.latitude, c.location.longitude),
+        .filter_map(|sp| sp.centroid.as_ref().map(|c| {
+            let mut modes: Vec<String> = sp.transport_mode.iter()
+                .chain(child_modes.get(sp.id.as_str()).into_iter().flatten().copied())
+                .cloned()
+                .collect();
+            dedup_preserve_order(&mut modes);
+            StopPoint { id: sp.id.clone(), coord: Coordinate::new(c.location.latitude, c.location.longitude), modes }
         }))
         .collect()
 }
@@ -1042,6 +1052,24 @@ mod tests {
             &no_zones(), 50, &[&bus_child], &HashSet::new(),
         ).unwrap();
         assert_eq!(res.content[0].extra.stop_place_role.as_deref(), Some("parent"));
+    }
+
+    #[test]
+    fn convertible_points_carry_children_modes() {
+        let parent = make_stop_place("NSR:StopPlace:60331", "Göteborg flygplats", None, None);
+        let mut air = make_stop_place("NSR:StopPlace:60330", "Göteborg flygplats", Some("air"), Some("airport"));
+        let mut bus = make_stop_place("NSR:StopPlace:60169", "Landvetter flygplats", Some("bus"), Some("onstreetBus"));
+        for c in [&mut air, &mut bus] {
+            c.parent_site_ref = Some(RefAttr { ref_: "NSR:StopPlace:60331".to_string() });
+        }
+        let result = ParseResult {
+            stop_places: vec![parent, air, bus],
+            groups: vec![],
+            topo_places: HashMap::new(),
+            fare_zone_authorities: HashMap::new(),
+        };
+        let modes: Vec<Vec<String>> = convertible_points(&result).into_iter().map(|p| p.modes).collect();
+        assert_eq!(modes, [vec!["air", "bus"], vec!["air"], vec!["bus"]]);
     }
 
     // ===== Full conversion tests =====
