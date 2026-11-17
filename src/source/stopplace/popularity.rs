@@ -1,3 +1,4 @@
+use super::registers::Factors;
 use super::xml::StopPlaceXml;
 
 pub(crate) fn calculate_stop_popularity(
@@ -5,6 +6,16 @@ pub(crate) fn calculate_stop_popularity(
     sp: &StopPlaceXml,
     children: &[&StopPlaceXml],
     usage_boost: f64,
+) -> i64 {
+    popularity_with(config, sp, children, stop_factors(config, sp, children, usage_boost))
+}
+
+/// Popularity from the stop place types with the given factors, e.g. a dropped duplicate's.
+pub(crate) fn popularity_with(
+    config: &crate::config::StopPlaceConfig,
+    sp: &StopPlaceXml,
+    children: &[&StopPlaceXml],
+    factors: Factors,
 ) -> i64 {
     let mut pop = config.default_value;
     let sum: f64 = children
@@ -16,6 +27,16 @@ pub(crate) fn calculate_stop_popularity(
     if sum > 0.0 {
         pop = (pop as f64 * sum) as i64;
     }
+    pop = (pop as f64 * factors.interchange) as i64;
+    (pop as f64 * factors.usage) as i64
+}
+
+pub(crate) fn stop_factors(
+    config: &crate::config::StopPlaceConfig,
+    sp: &StopPlaceXml,
+    children: &[&StopPlaceXml],
+    usage_boost: f64,
+) -> Factors {
     // A parent sums its children's stop place types, so it must take their interchange weighting
     // too. Oslo bussterminal's parent is only `interchangeAllowed` while the busStation child under
     // it is `preferredInterchange`, which left the parent - the record the proxy returns under
@@ -28,8 +49,7 @@ pub(crate) fn calculate_stop_popularity(
         .copied()
         .reduce(f64::max)
         .unwrap_or(1.0);
-    pop = (pop as f64 * interchange) as i64;
-    (pop as f64 * usage_boost) as i64
+    Factors { interchange, usage: usage_boost }
 }
 
 #[cfg(test)]

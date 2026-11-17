@@ -126,20 +126,41 @@ and a group whose members are all dropped is left out. Dedupe runs in `build` on
 "stopPlace": {
   "input": [{ "url": ".../Current_latest.zip" }, { "url": ".../stops_sweden_latest.zip" }],
   "dedupe": { "input": { "url": "https://raw.githubusercontent.com/entur/geocoder-data/main/dedupe-no-se.csv" } },
-  "countryRegisters": { "no": "nsr" }
+  "countryRegisters": { "no": "nsr", "se": "ssr" },
+  "countryRegistersKeepModes": ["air"]
 }
 ```
 
 `countryRegisters` maps a country to the register (id codespace) that owns its stops. A stop
-another register has inside that country, by coordinates, is dropped when an owner stop lies
-within 200 m, which catches SSR's copies of Norwegian stations whatever their ids; one with no
-owner stop nearby is kept. Both lists are printed. It is an error when no input has an owner
-stop, so a misspelled register can't empty a country. Dropped stops count as missing for dedupe,
-so a pair never loses both sides. `build` only, like dedupe.
+another register has inside that country, by coordinates, is dropped when an owner stop is near:
+within 200 m, or within 500 m with exactly its name (NSR and SSR put Stockholm C 242 m apart).
+This catches SSR's copies of Norwegian stations whatever their ids; a stop with no owner stop
+near is kept. The dropped and kept stops are printed. It is an error when no input has an owner
+stop, so a misspelled register can't empty a country. Dropped stops count as missing for the
+CSV, so a pair never loses both sides. `build` only, like the CSV.
 
-`countryRegistersKeepModes` also keeps a stop when it, or one of its children, has a listed mode
-that no owner stop within 200 m has. SSR has only a bus stop at most Swedish airports, so
-`["air"]` keeps NSR's airport hubs there. A mode no input stop has is an error.
+`countryRegistersKeepModes` keeps a stop when it, or one of its children, has a listed NeTEx
+mode no near owner stop has. SSR has only a bus stop at most Swedish airports, so `["air"]`
+keeps NSR's airport hubs there. A mode no input stop has is an error, and so is the key without
+`countryRegisters`.
+
+A dropped NSR stop hands on to its counterpart: the near owner stop with its name, else one
+sharing a mode, else any, the nearest first and then the most popular, since SSR often has a bus
+and a rail stop at one point. Only NSR stops hand on, as SSR's names for Norwegian stops are
+often stale and its interchange weighting must not change Norwegian ranking. A child whose
+parent is kept hands nothing on, since the parent already indexes its names.
+
+- Names: its name and alternative names that no near owner stop is indexed with go into the
+  counterpart's `alt_name`. A name counts as had when it equals one, or starts one followed by a
+  space, ignoring case, punctuation and ä/æ, ö/ø. This keeps NSR's Norwegian names for Swedish
+  stops searchable ("Gjellø", "Gøteborg bussterminal") and its "X station" names where SSR has
+  "X jvg".
+- Ranking: a counterpart with its name or a shared mode takes its interchange factor and usage
+  boost where higher, so SSR's Stockholm C, only `interchangeAllowed`, ranks above Stockholm City.
+- Groups: a group whose members were all dropped for an owner stop is kept (Stockholm,
+  Göteborg, Karlstad). Its locality, extent and importance still come from the NSR members.
+
+A CSV row that drops a counterpart hands what it was given on to the preferred stop.
 
 ### Country importance factors
 

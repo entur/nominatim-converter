@@ -30,8 +30,8 @@ const SECONDARY_GOSP_IMPORTANCE: f64 = 0.001;
 const GOSP_IMPORTANCE_CAP: f64 = 0.92;
 
 use super::farezone::FareZones;
-use super::popularity::calculate_stop_popularity;
-use super::registers::StopPoint;
+use super::popularity::{calculate_stop_popularity, popularity_with, stop_factors};
+use super::registers::{fold, SkipSet, StopPoint};
 use super::xml::*;
 
 pub fn convert_all(
@@ -41,7 +41,7 @@ pub fn convert_all(
     is_appending: bool,
     fare_zone_input: Option<&Path>,
     usage: &UsageBoost,
-    skip: &HashSet<String>,
+    skip: &SkipSet,
 ) -> Result<usize, Box<dyn std::error::Error>> {
     let stop_place = config.stop_place.as_ref().ok_or("config is missing the required `stopPlace` section")?;
     let xml = std::fs::read_to_string(input)?;
@@ -49,23 +49,17 @@ pub fn convert_all(
     let zone_source = ZoneSource::resolve(fare_zone_input, &result)?;
     let importance_calc = ImportanceCalculator::new(usage).with_country_factors(&config.country_importance_factors);
 
-    // Build child stops map (parentRef -> child stop places, in document order). A parent's own
-    // types, weighting and names are all derived from it.
-    let mut child_stops: HashMap<String, Vec<&StopPlaceXml>> = HashMap::new();
-    for sp in &result.stop_places {
-        if let Some(parent_ref) = &sp.parent_site_ref {
-            child_stops.entry(parent_ref.ref_.clone()).or_default().push(sp);
-        }
-    }
+    let child_stops = child_stops(&result);
 
     // Calculate popularities. The optional usage boost nudges popular stops upward;
     // member boosts reach GoSPs through the member-product propagation, and
     // `convert_gosp` additionally applies the group's own usage entry, so GoSP
     // ranking survives single-member churn in the stop place register.
     let stop_popularities: HashMap<String, i64> = result.stop_places.iter().map(|sp| {
-        let children = child_stops.get(&sp.id).map(Vec::as_slice).unwrap_or_default();
-        let pop = calculate_stop_popularity(stop_place, sp, children, usage.factor(&sp.id));
-        (sp.id.clone(), pop)
+        let children = child_stops.get(sp.id.as_str()).map(Vec::as_slice).unwrap_or_default();
+        let own = stop_factors(stop_place, sp, children, usage.factor(&sp.id));
+        let factors = skip.carried_factors.get(&sp.id).map_or(own, |c| own.max(*c));
+        (sp.id.clone(), popularity_with(stop_place, sp, children, factors))
     }).collect();
 
     let mut entries = Vec::new();
@@ -73,7 +67,7 @@ pub fn convert_all(
     // Convert stop places. Skipped stops still shape their parents and groups above.
     for sp in result.stop_places.iter().filter(|sp| !skip.contains(&sp.id)) {
         let pop = stop_popularities.get(&sp.id).copied().unwrap_or(0);
-        let children = child_stops.get(&sp.id).map(Vec::as_slice).unwrap_or_default();
+        let children = child_stops.get(sp.id.as_str()).map(Vec::as_slice).unwrap_or_default();
 
         if let Some(entry) = convert_stop_place(
             stop_place, &importance_calc, sp, &result.topo_places,
@@ -90,10 +84,11 @@ pub fn convert_all(
         .iter().map(String::as_str).collect();
     log_secondary_gosps(&secondary_gosps, &result.groups);
 
-    // Convert groups of stop places, except those whose every member is skipped
+    // Convert groups of stop places, except those whose members are all skipped, none for a stop
+    // in another register
     for gosp in &result.groups {
         let members = gosp.members.as_ref().map_or(&[][..], |m| &m.refs);
-        if !members.is_empty() && members.iter().all(|m| skip.contains(&m.ref_)) {
+        if !members.is_empty() && members.iter().all(|m| skip.contains(&m.ref_) && !skip.replaced.contains(&m.ref_)) {
             continue;
         }
         let is_secondary = secondary_gosps.contains(gosp.id.as_str());
@@ -240,24 +235,49 @@ pub(crate) fn register(id: &str) -> String {
     id.split(':').next().unwrap_or(id).to_ascii_lowercase()
 }
 
-/// The stop places `convert_stop_place` emits; they need a centroid and a name.
-pub(crate) fn convertible_points(result: &ParseResult) -> Vec<StopPoint> {
-    let mut child_modes: HashMap<&str, Vec<&String>> = HashMap::new();
+/// Parent id -> its child stop places, in document order. A parent's types, weighting and names
+/// are derived from them.
+fn child_stops(result: &ParseResult) -> HashMap<&str, Vec<&StopPlaceXml>> {
+    let mut children: HashMap<&str, Vec<&StopPlaceXml>> = HashMap::new();
     for sp in &result.stop_places {
-        if let (Some(parent), Some(mode)) = (&sp.parent_site_ref, &sp.transport_mode) {
-            child_modes.entry(parent.ref_.as_str()).or_default().push(mode);
+        if let Some(parent) = &sp.parent_site_ref {
+            children.entry(parent.ref_.as_str()).or_default().push(sp);
         }
     }
+    children
+}
+
+/// The stop places `convert_stop_place` emits; they need a centroid and a name.
+pub(crate) fn convertible_points(result: &ParseResult, stop_place: &StopPlaceConfig, usage: &UsageBoost) -> Vec<StopPoint> {
+    let child_stops = child_stops(result);
     result.stop_places.iter()
-        .filter(|sp| sp.name.is_some())
-        .filter_map(|sp| sp.centroid.as_ref().map(|c| {
+        .filter_map(|sp| {
+            let name = sp.name.as_deref()?;
+            let c = sp.centroid.as_ref()?;
+            let children = child_stops.get(sp.id.as_str()).map(Vec::as_slice).unwrap_or_default();
             let mut modes: Vec<String> = sp.transport_mode.iter()
-                .chain(child_modes.get(sp.id.as_str()).into_iter().flatten().copied())
+                .chain(children.iter().filter_map(|c| c.transport_mode.as_ref()))
                 .cloned()
                 .collect();
             dedup_preserve_order(&mut modes);
-            StopPoint { id: sp.id.clone(), coord: Coordinate::new(c.location.latitude, c.location.longitude), modes }
-        }))
+            let names: Vec<String> = std::iter::once(name.to_string()).chain(alt_stop_names(sp, name, None)).collect();
+            let mut indexed: Vec<String> = std::iter::once(name.to_string())
+                .chain(build_stop_alt_names(sp, name, children, &HashMap::new()))
+                .map(|n| fold(&n))
+                .collect();
+            dedup_preserve_order(&mut indexed);
+            let usage_boost = usage.factor(&sp.id);
+            Some(StopPoint {
+                id: sp.id.clone(),
+                coord: Coordinate::new(c.location.latitude, c.location.longitude),
+                parent: sp.parent_site_ref.as_ref().map(|p| p.ref_.clone()),
+                modes,
+                names,
+                indexed,
+                factors: stop_factors(stop_place, sp, children, usage_boost),
+                popularity: calculate_stop_popularity(stop_place, sp, children, usage_boost),
+            })
+        })
         .collect()
 }
 
@@ -270,7 +290,7 @@ pub(crate) fn convert_stop_place(
     zone_source: &ZoneSource,
     popularity: i64,
     child_stops: &[&StopPlaceXml],
-    skip: &HashSet<String>,
+    skip: &SkipSet,
 ) -> Option<NominatimPlace> {
     let centroid_xml = sp.centroid.as_ref()?;
     let coord = Coordinate::new(centroid_xml.location.latitude, centroid_xml.location.longitude);
@@ -299,7 +319,7 @@ pub(crate) fn convert_stop_place(
         sp, &role, &inferred_types, &country, &geography, &zones,
     );
 
-    let alt_names = build_stop_alt_names(sp, sp_name, child_stops);
+    let alt_names = build_stop_alt_names(sp, sp_name, child_stops, &skip.carried_names);
     let visible_alt: Vec<String> = alt_stop_names(sp, sp_name, Some("label"));
 
     let entry = NominatimPlace {
@@ -504,12 +524,20 @@ impl StopFareZones {
 /// Indexed alt names: the stop's own alternative names plus, for a multimodal parent, each
 /// child's name and alternative names. Without the children's aliases a parent misses queries
 /// its children match (e.g. "Nasjonalteatret"), and the proxy's default `multimodal=parent`
-/// then filters away the only hits.
-fn build_stop_alt_names(sp: &StopPlaceXml, sp_name: &str, child_stops: &[&StopPlaceXml]) -> Vec<String> {
+/// then filters away the only hits. Names carried from dropped duplicates follow the same path.
+fn build_stop_alt_names(
+    sp: &StopPlaceXml,
+    sp_name: &str,
+    child_stops: &[&StopPlaceXml],
+    carried: &HashMap<String, Vec<String>>,
+) -> Vec<String> {
+    let carried_for = |id: &str| carried.get(id).into_iter().flatten().filter(|n| n.as_str() != sp_name).cloned();
     let mut alt_names: Vec<String> = alt_stop_names(sp, sp_name, None);
+    alt_names.extend(carried_for(&sp.id));
     for cs in child_stops {
         alt_names.extend(cs.name.clone());
         alt_names.extend(alt_stop_names(cs, sp_name, None));
+        alt_names.extend(carried_for(&cs.id));
     }
     dedup_preserve_order(&mut alt_names);
     alt_names
@@ -927,7 +955,7 @@ mod tests {
         ]);
         let result = convert_stop_place(
             config.stop_place.as_ref().unwrap(), &importance_calc, &parent, &HashMap::new(),
-            &no_zones(), 50, &[&child_rail, &child_tram], &HashSet::new(),
+            &no_zones(), 50, &[&child_rail, &child_tram], &SkipSet::default(),
         ).unwrap();
         // Trailing "Nationaltheatret" is the tram child's name: child names are only deduped,
         // not filtered against the parent's name.
@@ -935,6 +963,31 @@ mod tests {
             result.content[0].name.as_ref().unwrap().alt_name.as_deref(),
             Some("Nationaltheatret stasjon;Nasjonalteatret;National Theatre;Nationaltheatret"),
         );
+    }
+
+    #[test]
+    fn carried_names_reach_the_stop_and_its_parent() {
+        let config = test_config();
+        let importance_calc = ImportanceCalculator::new(&EMPTY_USAGE);
+        let parent = make_stop_place("SSR:StopPlace:1", "Gällö", None, None);
+        let mut child = make_stop_place("SSR:StopPlace:2", "Gällö järnvägsstation", Some("rail"), Some("railStation"));
+        child.parent_site_ref = Some(RefAttr { ref_: "SSR:StopPlace:1".to_string() });
+        let skip = SkipSet {
+            carried_names: HashMap::from([
+                ("SSR:StopPlace:1".to_string(), vec!["Gällö".to_string(), "Gjellø".to_string()]),
+                ("SSR:StopPlace:2".to_string(), vec!["Gällö station".to_string()]),
+            ]),
+            ..SkipSet::default()
+        };
+        let alt_name = |sp: &StopPlaceXml, children: &[&StopPlaceXml]| {
+            let place = convert_stop_place(
+                config.stop_place.as_ref().unwrap(), &importance_calc, sp, &HashMap::new(),
+                &no_zones(), 50, children, &skip,
+            ).unwrap();
+            place.content[0].name.as_ref().unwrap().alt_name.clone()
+        };
+        assert_eq!(alt_name(&parent, &[&child]).as_deref(), Some("Gjellø;Gällö järnvägsstation;Gällö station"));
+        assert_eq!(alt_name(&child, &[]).as_deref(), Some("Gällö station"));
     }
 
     // ===== Category tests =====
@@ -946,7 +999,7 @@ mod tests {
         let sp = make_stop_place("SSR:StopPlace:1", "Test", Some("rail"), Some("railStation"));
         let result = convert_stop_place(
             config.stop_place.as_ref().unwrap(), &importance_calc, &sp, &HashMap::new(),
-            &no_zones(), 50, &[], &HashSet::new(),
+            &no_zones(), 50, &[], &SkipSet::default(),
         ).unwrap();
         let content = &result.content[0];
         assert_eq!(content.extra.source.as_deref(), Some("ssr"));
@@ -961,7 +1014,7 @@ mod tests {
         let sp = make_stop_place("NSR:StopPlace:1", "Test", Some("funicular"), Some("other"));
         let result = convert_stop_place(
             config.stop_place.as_ref().unwrap(), &importance_calc, &sp, &HashMap::new(),
-            &no_zones(), 50, &[], &HashSet::new(),
+            &no_zones(), 50, &[], &SkipSet::default(),
         ).unwrap();
         let cats = &result.content[0].categories;
         assert!(cats.iter().any(|c| c == "legacy.category.funicular"));
@@ -975,7 +1028,7 @@ mod tests {
         let sp = make_stop_place("NSR:StopPlace:1", "Test", Some("bus"), Some("onstreetBus"));
         let result = convert_stop_place(
             config.stop_place.as_ref().unwrap(), &importance_calc, &sp, &HashMap::new(),
-            &no_zones(), 50, &[], &HashSet::new(),
+            &no_zones(), 50, &[], &SkipSet::default(),
         ).unwrap();
         let cats = &result.content[0].categories;
         assert!(!cats.iter().any(|c| c == "legacy.category.bus"));
@@ -989,7 +1042,7 @@ mod tests {
         let sp = make_stop_place("NSR:StopPlace:1", "Test", Some("rail"), Some("railStation"));
         let result = convert_stop_place(
             config.stop_place.as_ref().unwrap(), &importance_calc, &sp, &HashMap::new(),
-            &no_zones(), 50, &[], &HashSet::new(),
+            &no_zones(), 50, &[], &SkipSet::default(),
         ).unwrap();
         let cats = &result.content[0].categories;
         assert!(cats.iter().any(|c| c == "stop_place_type.railStation"), "{cats:?}");
@@ -1005,7 +1058,7 @@ mod tests {
         let metro = make_stop_place("NSR:StopPlace:C3", "Metro", None, Some("metroStation"));
         let result = convert_stop_place(
             config.stop_place.as_ref().unwrap(), &importance_calc, &sp, &HashMap::new(),
-            &no_zones(), 50, &[&bus, &rail, &metro], &HashSet::new(),
+            &no_zones(), 50, &[&bus, &rail, &metro], &SkipSet::default(),
         ).unwrap();
         let cats = &result.content[0].categories;
         assert!(cats.iter().any(|c| c == "legacy.category.funicular"));
@@ -1030,7 +1083,7 @@ mod tests {
         let standalone = make_stop_place("NSR:StopPlace:Solo", "Solo", Some("bus"), Some("onstreetBus"));
         let res = convert_stop_place(
             config.stop_place.as_ref().unwrap(), &importance_calc, &standalone, &HashMap::new(),
-            &no_zones(), 50, &[], &HashSet::new(),
+            &no_zones(), 50, &[], &SkipSet::default(),
         ).unwrap();
         assert_eq!(res.content[0].extra.stop_place_role.as_deref(), Some("standalone"));
 
@@ -1039,7 +1092,7 @@ mod tests {
         child.parent_site_ref = Some(RefAttr { ref_: "NSR:StopPlace:Parent".to_string() });
         let res = convert_stop_place(
             config.stop_place.as_ref().unwrap(), &importance_calc, &child, &HashMap::new(),
-            &no_zones(), 50, &[], &HashSet::new(),
+            &no_zones(), 50, &[], &SkipSet::default(),
         ).unwrap();
         assert_eq!(res.content[0].extra.stop_place_role.as_deref(), Some("child"));
 
@@ -1049,13 +1102,13 @@ mod tests {
         let bus_child = make_stop_place("NSR:StopPlace:C1", "Bus", None, Some("onstreetBus"));
         let res = convert_stop_place(
             config.stop_place.as_ref().unwrap(), &importance_calc, &both, &HashMap::new(),
-            &no_zones(), 50, &[&bus_child], &HashSet::new(),
+            &no_zones(), 50, &[&bus_child], &SkipSet::default(),
         ).unwrap();
         assert_eq!(res.content[0].extra.stop_place_role.as_deref(), Some("parent"));
     }
 
     #[test]
-    fn convertible_points_carry_children_modes() {
+    fn convertible_points_carry_children_modes_and_names() {
         let parent = make_stop_place("NSR:StopPlace:60331", "Göteborg flygplats", None, None);
         let mut air = make_stop_place("NSR:StopPlace:60330", "Göteborg flygplats", Some("air"), Some("airport"));
         let mut bus = make_stop_place("NSR:StopPlace:60169", "Landvetter flygplats", Some("bus"), Some("onstreetBus"));
@@ -1068,7 +1121,12 @@ mod tests {
             topo_places: HashMap::new(),
             fare_zone_authorities: HashMap::new(),
         };
-        let modes: Vec<Vec<String>> = convertible_points(&result).into_iter().map(|p| p.modes).collect();
+        let config = test_config();
+        let points = convertible_points(&result, config.stop_place.as_ref().unwrap(), &UsageBoost::empty());
+        assert_eq!(points[0].names, ["Göteborg flygplats"]);
+        assert_eq!(points[0].indexed, ["gøteborg flygplats", "landvetter flygplats"]);
+        assert_eq!(points[2].parent.as_deref(), Some("NSR:StopPlace:60331"));
+        let modes: Vec<Vec<String>> = points.into_iter().map(|p| p.modes).collect();
         assert_eq!(modes, [vec!["air", "bus"], vec!["air"], vec!["bus"]]);
     }
 
@@ -1079,7 +1137,7 @@ mod tests {
         let config = test_config();
         let input = test_data_path("stopPlaces.xml");
         let output = std::env::temp_dir().join("test_stopplace_convert_output.ndjson");
-        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &HashSet::new()).unwrap();
+        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &SkipSet::default()).unwrap();
         let content = std::fs::read_to_string(&output).unwrap();
         assert!(content.contains("NominatimDumpFile"));
         assert!(content.contains("NSR:StopPlace:56697"));
@@ -1091,13 +1149,13 @@ mod tests {
         let config = test_config();
         let input = test_data_path("stopPlaces.xml");
         let output = std::env::temp_dir().join("test_stopplace_skip_output.ndjson");
-        let skip: HashSet<String> = [
+        let skip = skip_ids(&[
             "NSR:StopPlace:56697",
             // parent of 305 and 59649
             "NSR:StopPlace:59650",
             // all members of NSR:GroupOfStopPlaces:72
             "NSR:StopPlace:56851", "NSR:StopPlace:56689", "NSR:StopPlace:56676", "NSR:StopPlace:59048",
-        ].map(String::from).into();
+        ]);
         convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &skip).unwrap();
         let content = std::fs::read_to_string(&output).unwrap();
         assert!(!content.contains("\"id\":\"NSR:StopPlace:56697\""));
@@ -1107,6 +1165,42 @@ mod tests {
         let orphan = stop_line(&content, "NSR:StopPlace:305");
         assert!(!orphan.contains("multimodal.child"), "{orphan}");
         let _ = std::fs::remove_file(&output);
+    }
+
+    fn skip_ids(ids: &[&str]) -> SkipSet {
+        SkipSet { ids: ids.iter().map(|id| id.to_string()).collect(), ..SkipSet::default() }
+    }
+
+    #[test]
+    fn group_of_skipped_stops_stays_when_one_was_replaced() {
+        let output = std::env::temp_dir().join("test_stopplace_replaced_group.ndjson");
+        let mut skip = skip_ids(&["NSR:StopPlace:56851", "NSR:StopPlace:56689", "NSR:StopPlace:56676", "NSR:StopPlace:59048"]);
+        skip.replaced.insert("NSR:StopPlace:56689".to_string());
+        convert_all(&test_config(), &test_data_path("stopPlaces.xml"), &output, false, None, &UsageBoost::empty(), &skip).unwrap();
+        let content = std::fs::read_to_string(&output).unwrap();
+        let _ = std::fs::remove_file(&output);
+        assert!(content.contains("\"id\":\"NSR:GroupOfStopPlaces:72\""));
+        assert!(!content.contains("\"id\":\"NSR:StopPlace:56689\""));
+    }
+
+    #[test]
+    fn carried_factors_raise_popularity_but_never_lower_it() {
+        use super::super::registers::Factors;
+        let importance = |factors: Factors| {
+            let output = std::env::temp_dir().join(format!("test_carried_factors_{}.ndjson", factors.interchange));
+            let skip = SkipSet {
+                carried_factors: HashMap::from([("NSR:StopPlace:56697".to_string(), factors)]),
+                ..SkipSet::default()
+            };
+            convert_all(&test_config(), &test_data_path("stopPlaces.xml"), &output, false, None, &UsageBoost::empty(), &skip).unwrap();
+            let content = std::fs::read_to_string(&output).unwrap();
+            let _ = std::fs::remove_file(&output);
+            let line: serde_json::Value = serde_json::from_str(stop_line(&content, "NSR:StopPlace:56697")).unwrap();
+            line["content"][0]["importance"].as_f64().unwrap()
+        };
+        let own = importance(Factors { interchange: 0.01, usage: 0.01 });
+        assert!(importance(Factors { interchange: 10.0, usage: 2.0 }) > own);
+        assert_eq!(own, importance(Factors { interchange: 1.0, usage: 1.0 }));
     }
 
     #[test]
@@ -1126,7 +1220,7 @@ mod tests {
         std::fs::write(&input, format!("<root>{xml}</root>")).unwrap();
         let group_line = |skip: &[&str]| {
             let output = std::env::temp_dir().join("test_skipped_parent.ndjson");
-            let skip = skip.iter().map(|s| s.to_string()).collect();
+            let skip = skip_ids(skip);
             convert_all(&test_config(), &input, &output, false, None, &UsageBoost::empty(), &skip).unwrap();
             let content = std::fs::read_to_string(&output).unwrap();
             let _ = std::fs::remove_file(&output);
@@ -1144,7 +1238,7 @@ mod tests {
         let config = test_config();
         let input = test_data_path("stopPlaces.xml");
         let output = std::env::temp_dir().join("test_gosp_convert_output.ndjson");
-        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &HashSet::new()).unwrap();
+        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &SkipSet::default()).unwrap();
         let content = std::fs::read_to_string(&output).unwrap();
         assert!(content.contains("NSR:GroupOfStopPlaces:1"));
         assert!(content.contains("NSR:GroupOfStopPlaces:72"));
@@ -1356,7 +1450,7 @@ mod tests {
             let mut sp = make_stop_place("SSR:StopPlace:1", "Stop", Some("bus"), None);
             sp.centroid = Some(CentroidXml { location: LocationXml { longitude: lon, latitude: lat } });
             let place = convert_stop_place(stop_place, calc, &sp, &HashMap::new(), &ZoneSource::NsrRefs(&zones),
-                1_000, &[], &HashSet::new()).unwrap();
+                1_000, &[], &SkipSet::default()).unwrap();
             place.content[0].importance.0.parse::<f64>().unwrap()
         };
         let (gothenburg, oslo) = ((57.709, 11.973), (59.911, 10.753));
@@ -1421,7 +1515,7 @@ mod tests {
             vec!["NSR:GroupOfStopPlaces:1".to_string()];
         let input = test_data_path("stopPlaces.xml");
         let output = std::env::temp_dir().join("test_secondary_gosp_cap.ndjson");
-        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &HashSet::new()).unwrap();
+        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &SkipSet::default()).unwrap();
         let content = std::fs::read_to_string(&output).unwrap();
         let _ = std::fs::remove_file(&output);
 
@@ -1455,7 +1549,7 @@ mod tests {
         let config = test_config();
         let input = test_data_path("stopPlaces.xml");
         let output = std::env::temp_dir().join("test_convert_valid_json.ndjson");
-        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &HashSet::new()).unwrap();
+        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &SkipSet::default()).unwrap();
         let lines: Vec<String> = std::fs::read_to_string(&output).unwrap().lines().map(String::from).collect();
         assert!(!lines.is_empty());
         for line in &lines {
@@ -1470,7 +1564,7 @@ mod tests {
         let config = test_config();
         let input = test_data_path("stopPlaces.xml");
         let output = std::env::temp_dir().join("test_convert_coords.ndjson");
-        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &HashSet::new()).unwrap();
+        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &SkipSet::default()).unwrap();
         let lines: Vec<String> = std::fs::read_to_string(&output).unwrap().lines()
             .filter(|l| l.contains("NSR:StopPlace:"))
             .map(String::from).collect();
@@ -1486,7 +1580,7 @@ mod tests {
         let config = test_config();
         let input = test_data_path("stopPlaces.xml");
         let output = std::env::temp_dir().join("test_convert_authority.ndjson");
-        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &HashSet::new()).unwrap();
+        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &SkipSet::default()).unwrap();
         let content = std::fs::read_to_string(&output).unwrap();
         assert!(content.contains("fare_zone_authority.FIN.Authority.FIN_ID"));
         assert!(content.contains("fare_zone_authority.RUT.Authority.RUT"));
@@ -1498,7 +1592,7 @@ mod tests {
         let config = test_config();
         let input = test_data_path("stopPlaces.xml");
         let output = std::env::temp_dir().join("test_convert_fare_zone_fallback.ndjson");
-        convert_all(&config, &input, &output, false, None, &UsageBoost::empty(), &HashSet::new()).unwrap();
+        convert_all(&config, &input, &output, false, None, &UsageBoost::empty(), &SkipSet::default()).unwrap();
         let content = std::fs::read_to_string(&output).unwrap();
         // RUT:FareZone:99 exists only as an NSR ref, so it proves the fallback ran.
         assert!(content.contains("fare_zone_id.RUT.FareZone.99"));
@@ -1522,7 +1616,7 @@ mod tests {
         let config = test_config();
         let input = test_data_path("stopPlaces.xml");
         let output = std::env::temp_dir().join("test_convert_parent_zones.ndjson");
-        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &HashSet::new()).unwrap();
+        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &SkipSet::default()).unwrap();
         let content = std::fs::read_to_string(&output).unwrap();
 
         // RUT:FareZone:13 scopes to explicit stops and lists only the child 59649, so the hub
@@ -1555,7 +1649,7 @@ mod tests {
         let config = test_config();
         let input = test_data_path("stopPlaces.xml");
         let output = std::env::temp_dir().join("test_convert_zone_id_split.ndjson");
-        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &HashSet::new()).unwrap();
+        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &SkipSet::default()).unwrap();
         let content = std::fs::read_to_string(&output).unwrap();
         // NSR's <TariffZoneRef>s land under tariff_zone_id.
         assert!(content.contains("tariff_zone_id.RUT.TariffZone.1"));
@@ -1576,7 +1670,7 @@ mod tests {
         let config = test_config();
         let input = test_data_path("stopPlaces.xml");
         let output = std::env::temp_dir().join("test_convert_zone_sources.ndjson");
-        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &HashSet::new()).unwrap();
+        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &SkipSet::default()).unwrap();
         let content = std::fs::read_to_string(&output).unwrap();
 
         // Nydalen: NSR gives it RUT:TariffZone:1; the export adds RUT:FareZone:4 by outline
@@ -1600,7 +1694,7 @@ mod tests {
         let config = test_config();
         let input = test_data_path("stopPlaces.xml");
         let output = std::env::temp_dir().join("test_convert_transport_mode.ndjson");
-        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &HashSet::new()).unwrap();
+        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &SkipSet::default()).unwrap();
         let content = std::fs::read_to_string(&output).unwrap();
         assert!(content.contains("\"transport_mode\":\"bus:localBus\""));
         let _ = std::fs::remove_file(&output);
@@ -1611,7 +1705,7 @@ mod tests {
         let config = test_config();
         let input = test_data_path("stopPlaces.xml");
         let output = std::env::temp_dir().join("test_convert_gid.ndjson");
-        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &HashSet::new()).unwrap();
+        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &SkipSet::default()).unwrap();
         let content = std::fs::read_to_string(&output).unwrap();
         assert!(content.contains("county_gid.KVE"));
         assert!(content.contains("locality_gid.KVE"));
@@ -1624,7 +1718,7 @@ mod tests {
         let input = test_data_path("stopPlaces.xml");
 
         let baseline_out = std::env::temp_dir().join("test_usage_baseline.ndjson");
-        convert_all(&config, &input, &baseline_out, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &HashSet::new()).unwrap();
+        convert_all(&config, &input, &baseline_out, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &SkipSet::default()).unwrap();
         let baseline = std::fs::read_to_string(&baseline_out).unwrap();
         let _ = std::fs::remove_file(&baseline_out);
 
@@ -1632,7 +1726,7 @@ mod tests {
         std::fs::write(&csv, "id;name;usage\nNSR:StopPlace:56697;Oslo S;5000000\n").unwrap();
         let usage = UsageBoost::load(Some(&csv), crate::common::usage::DEFAULT_ALPHA, crate::common::usage::DEFAULT_USAGE_FLOOR).unwrap();
         let boosted_out = std::env::temp_dir().join("test_usage_boosted.ndjson");
-        convert_all(&config, &input, &boosted_out, false, Some(&test_data_path("fareZones.xml")), &usage, &HashSet::new()).unwrap();
+        convert_all(&config, &input, &boosted_out, false, Some(&test_data_path("fareZones.xml")), &usage, &SkipSet::default()).unwrap();
         let boosted = std::fs::read_to_string(&boosted_out).unwrap();
         let _ = std::fs::remove_file(&boosted_out);
         let _ = std::fs::remove_file(&csv);

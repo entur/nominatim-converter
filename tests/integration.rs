@@ -256,7 +256,7 @@ fn build_drops_register_copies_but_never_both_sides_of_a_dedupe_pair() {
     let output = temp_output("build-registers");
     let (success, _, stderr) = run_converter(&["build", "-c", config.to_str().unwrap(), "-o", output.to_str().unwrap(), "-f"]);
     assert!(success, "build failed: {stderr}");
-    assert!(stderr.contains("leaving out 2 stop places in no with a nsr stop within 200 m: SSR:StopPlace:1, SSR:StopPlace:3"), "{stderr}");
+    assert!(stderr.contains("leaving out 2 stop places in no with a nsr stop nearby: SSR:StopPlace:1, SSR:StopPlace:3"), "{stderr}");
     assert!(stderr.contains("kept 1 stop places in no with no nsr stop nearby: SSR:StopPlace:2"), "{stderr}");
 
     let lines = read_ndjson(&output);
@@ -326,6 +326,19 @@ fn build_rejects_source_section_without_input() {
     let (success, _, stderr) = run_converter(&["build", "-c", config.to_str().unwrap(), "-o", output.to_str().unwrap(), "-f"]);
     assert!(!success, "poi section without input should fail");
     assert!(stderr.to_lowercase().contains("input"), "error should mention the missing input: {stderr}");
+    cleanup(&output);
+    let _ = std::fs::remove_file(&config);
+}
+
+#[test]
+fn build_rejects_keep_modes_without_country_registers() {
+    let config_json = r#"{ "stopPlace": { "input": { "file": "missing.xml" }, "defaultValue": 50, "rankAddress": 30,
+        "stopTypeFactors": {}, "interchangeFactors": {}, "countryRegistersKeepModes": ["air"] } }"#;
+    let config = write_temp_config("keep-modes", config_json);
+    let output = temp_output("build-keep-modes");
+    let (success, _, stderr) = run_converter(&["build", "-c", config.to_str().unwrap(), "-o", output.to_str().unwrap(), "-f"]);
+    assert!(!success, "keep modes without countryRegisters should fail");
+    assert!(stderr.contains("countryRegistersKeepModes needs countryRegisters"), "{stderr}");
     cleanup(&output);
     let _ = std::fs::remove_file(&config);
 }

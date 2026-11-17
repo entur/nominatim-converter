@@ -14,7 +14,7 @@ use common::input::{CACHE_DIR_ENV, CacheOptions, ResolvedInput, is_cached, resol
 use common::norwegian_counties;
 use common::usage::UsageBoost;
 use config::{SourceInput, SourceInputs};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -310,7 +310,7 @@ fn run_stopplace(
     }
     let fare_zone_path = fare_zones.as_ref().map(ResolvedInput::path);
     run_conversion("StopPlace", args.convert, Some("*.xml"), opts, |cfg| cfg.stop_place.as_ref().and_then(|s| s.min_lines), |cfg, input, output, append, usage| {
-        source::stopplace::convert(cfg, input, output, append, fare_zone_path, usage, &HashSet::new())
+        source::stopplace::convert(cfg, input, output, append, fare_zone_path, usage, &Default::default())
     })
     // `fare_zones` drops here; if temp, its file is cleaned up automatically.
 }
@@ -448,18 +448,21 @@ fn run_build(args: BuildArgs, opts: RunOptions) -> Result<(), Box<dyn std::error
         run_one_source("POI", input.path(), output, &cfg, poi.min_lines, &usage, source::poi::convert)?;
     }
     if let Some(stop_place) = cfg.stop_place.as_ref() {
+        if stop_place.country_registers.is_empty() && !stop_place.country_registers_keep_modes.is_empty() {
+            return Err("countryRegistersKeepModes needs countryRegisters".into());
+        }
         let inputs = resolve_sources(&stop_place.input, "stopplace", Some("*.xml"), opts)?;
-        let mut skip = HashSet::new();
+        let mut skip = source::stopplace::registers::SkipSet::default();
         if dedupe_resolved.is_some() || !stop_place.country_registers.is_empty() {
             let mut points = Vec::new();
             for (_, input) in &inputs {
-                points.extend(source::stopplace::stop_points(input.path())?);
+                points.extend(source::stopplace::stop_points(input.path(), stop_place, &usage)?);
             }
             skip = source::stopplace::registers::skip_set(&points, &stop_place.country_registers, &stop_place.country_registers_keep_modes)?;
             // Without the stops dropped above, so a CSV row whose preferred stop was dropped keeps the other.
             if let Some(csv) = dedupe_resolved.as_ref() {
                 let present = points.into_iter().map(|p| p.id).filter(|id| !skip.contains(id)).collect();
-                skip.extend(source::stopplace::dedupe::skip_set(csv.path(), &present)?);
+                skip.drop_for_preferred(source::stopplace::dedupe::preferred(csv.path(), &present)?);
             }
         }
         let fare_zone_path = fare_zones_resolved.as_ref().map(ResolvedInput::path);
