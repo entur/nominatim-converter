@@ -195,7 +195,8 @@ pub struct StopPlaceConfig {
     /// See [`CountryRegisters`].
     #[serde(default)]
     pub country_registers: CountryRegisters,
-    /// Transport modes that keep a `countryRegisters` stop when no owner stop within 200 m has them.
+    /// NeTEx transport modes (`air`, `water`, ...) that keep a stop `countryRegisters` would drop
+    /// when no near owner stop has them; a stop's modes include its children's.
     #[serde(default)]
     pub country_registers_keep_modes: Vec<String>,
     #[serde(default)]

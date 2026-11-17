@@ -1,11 +1,12 @@
 //! Stops registered in two registers, from a CSV of `id_a,id_b,preferred_id[,...]` rows after a
 //! header. Drops the id that isn't preferred, unless the preferred one is missing from the inputs.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
-/// Ids to leave out of the output, given the stop place ids the inputs will emit.
-pub fn skip_set(csv: &Path, present: &HashSet<String>) -> Result<HashSet<String>, Box<dyn std::error::Error>> {
+/// Each id to leave out of the output, to its preferred duplicate, given the stop place ids the
+/// inputs will emit.
+pub fn preferred(csv: &Path, present: &HashSet<String>) -> Result<BTreeMap<String, String>, Box<dyn std::error::Error>> {
     let content = std::fs::read_to_string(csv)
         .map_err(|e| format!("Cannot read dedupe CSV '{}': {e}", csv.display()))?;
     let (skip, kept) = parse(&content, present)?;
@@ -16,11 +17,13 @@ pub fn skip_set(csv: &Path, present: &HashSet<String>) -> Result<HashSet<String>
     Ok(skip)
 }
 
-/// Returns the ids to skip, and the ids kept because their preferred duplicate is missing.
-fn parse(content: &str, present: &HashSet<String>) -> Result<(HashSet<String>, Vec<String>), Box<dyn std::error::Error>> {
+/// Ids to skip, each to its preferred duplicate, and the ids kept because theirs is missing.
+type Parsed = (BTreeMap<String, String>, Vec<String>);
+
+fn parse(content: &str, present: &HashSet<String>) -> Result<Parsed, Box<dyn std::error::Error>> {
     let mut preferred_ids = HashSet::new();
     let mut dropped_ids = HashSet::new();
-    let mut skip = HashSet::new();
+    let mut skip = BTreeMap::new();
     let mut kept = Vec::new();
     for (lineno, line) in content.lines().enumerate().skip(1) {
         let line_err = |msg: String| format!("dedupe CSV line {}: {msg}: {line}", lineno + 1);
@@ -42,7 +45,7 @@ fn parse(content: &str, present: &HashSet<String>) -> Result<(HashSet<String>, V
         preferred_ids.insert(preferred);
         dropped_ids.insert(other);
         match (present.contains(preferred), present.contains(other)) {
-            (true, true) => { skip.insert(other.to_string()); }
+            (true, true) => { skip.insert(other.to_string(), preferred.to_string()); }
             (false, true) => kept.push(other.to_string()),
             _ => {}
         }
@@ -69,11 +72,14 @@ NSR:StopPlace:374,SSR:StopPlace:4,SSR:StopPlace:4,Göteborg Centralstation
 
     fn ids(v: &[&str]) -> HashSet<String> { v.iter().map(|s| s.to_string()).collect() }
 
+    fn dropped(skip: &BTreeMap<String, String>) -> HashSet<String> { skip.keys().cloned().collect() }
+
     #[test]
     fn drops_the_non_preferred_side() {
         let present = ids(&["NSR:StopPlace:127", "SSR:StopPlace:1", "SSR:StopPlace:2", "NSR:StopPlace:107", "SSR:StopPlace:3"]);
         let (skip, kept) = parse(CSV, &present).unwrap();
-        assert_eq!(skip, ids(&["SSR:StopPlace:1", "SSR:StopPlace:2", "NSR:StopPlace:107"]));
+        assert_eq!(dropped(&skip), ids(&["SSR:StopPlace:1", "SSR:StopPlace:2", "NSR:StopPlace:107"]));
+        assert_eq!(skip["NSR:StopPlace:107"], "SSR:StopPlace:3");
         assert!(kept.is_empty());
     }
 
@@ -89,7 +95,7 @@ NSR:StopPlace:374,SSR:StopPlace:4,SSR:StopPlace:4,Göteborg Centralstation
     fn tolerates_crlf_blank_lines_and_quoted_ids() {
         let csv = "h\r\n\r\n\"NSR:StopPlace:1\",\"SSR:StopPlace:2\",\"SSR:StopPlace:2\"\r\n";
         let (skip, _) = parse(csv, &ids(&["NSR:StopPlace:1", "SSR:StopPlace:2"])).unwrap();
-        assert_eq!(skip, ids(&["NSR:StopPlace:1"]));
+        assert_eq!(dropped(&skip), ids(&["NSR:StopPlace:1"]));
     }
 
     #[test]
