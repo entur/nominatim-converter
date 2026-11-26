@@ -37,7 +37,7 @@ pub fn convert_all(
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) if e.name().as_ref() == b"featureMember" || e.name().as_ref() == b"gml:featureMember" => {
+            Ok(Event::Start(ref e)) if e.name().as_ref() == "featureMember" || e.name().as_ref() == "gml:featureMember" => {
                 if let Some(entry) = parse_feature_member(&mut reader)? {
                     let place = convert_to_nominatim(&entry, stedsnavn, &importance_calc);
                     writer.write_entry(&place)?;

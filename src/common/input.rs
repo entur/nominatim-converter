@@ -648,9 +648,9 @@ fn find_zip_entry(
     let matching_index = (0..archive.len())
         .find(|&i| {
             let Ok(entry) = archive.by_index(i) else { return false };
-            let name = entry.name();
+            let Ok(name) = entry.name() else { return false };
             if let Some(pattern) = glob_pattern {
-                glob_match(pattern, name)
+                glob_match(pattern, &name)
             } else {
                 !name.ends_with('/')
             }
@@ -664,7 +664,7 @@ fn find_zip_entry(
             io::Error::new(io::ErrorKind::NotFound, msg)
         })?;
 
-    let name = archive.by_index(matching_index)?.name().to_string();
+    let name = archive.by_index(matching_index)?.name()?.to_string();
     Ok((name, matching_index))
 }
 

@@ -24,7 +24,7 @@ pub(crate) fn read_element_as_string(
             Ok(Event::End(ref e)) => {
                 depth -= 1;
                 inner.extend_from_slice(b"</");
-                inner.extend_from_slice(e.name().as_ref());
+                inner.extend_from_slice(e.name().as_ref().as_bytes());
                 inner.push(b'>');
                 if depth == 0 {
                     break;
@@ -34,11 +34,11 @@ pub(crate) fn read_element_as_string(
                 append_tag(&mut inner, e, b"/>")?;
             }
             Ok(Event::Text(ref e)) => {
-                inner.extend_from_slice(e.as_ref());
+                inner.extend_from_slice(e.as_bytes());
             }
             Ok(Event::CData(ref e)) => {
                 inner.extend_from_slice(b"<![CDATA[");
-                inner.extend_from_slice(e.as_ref());
+                inner.extend_from_slice(e.as_bytes());
                 inner.extend_from_slice(b"]]>");
             }
             Ok(Event::Eof) => break,
@@ -58,13 +58,13 @@ fn append_tag(
     closer: &[u8],
 ) -> Result<(), Box<dyn std::error::Error>> {
     inner.push(b'<');
-    inner.extend_from_slice(e.name().as_ref());
+    inner.extend_from_slice(e.name().as_ref().as_bytes());
     for attr in e.attributes() {
         let attr = attr?;
         inner.push(b' ');
-        inner.extend_from_slice(attr.key.as_ref());
+        inner.extend_from_slice(attr.key.as_ref().as_bytes());
         inner.extend_from_slice(b"=\"");
-        inner.extend_from_slice(&attr.value);
+        inner.extend_from_slice(attr.value.as_bytes());
         inner.push(b'"');
     }
     inner.extend_from_slice(closer);

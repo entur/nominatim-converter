@@ -33,7 +33,7 @@ pub(crate) fn parse_gml(xml: &str) -> Result<Vec<StedsnavnEntry>, Box<dyn std::e
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) if e.name().as_ref() == b"featureMember" || e.name().as_ref() == b"gml:featureMember" => {
+            Ok(Event::Start(ref e)) if e.name().as_ref() == "featureMember" || e.name().as_ref() == "gml:featureMember" => {
                 if let Some(entry) = parse_feature_member(&mut reader)? {
                     entries.push(entry);
                 }
@@ -71,7 +71,7 @@ pub(crate) fn parse_feature_member<R: std::io::BufRead>(reader: &mut Reader<R>) 
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => {
                 let qname = e.name();
-                let name = std::str::from_utf8(qname.as_ref()).unwrap_or("");
+                let name = qname.as_ref();
                 match name {
                     "lokalId" | "app:lokalId" => { current_field = Some("lokalId"); text_buf.clear(); }
                     "navnerom" | "app:navnerom" => { current_field = Some("navnerom"); text_buf.clear(); }
@@ -90,7 +90,7 @@ pub(crate) fn parse_feature_member<R: std::io::BufRead>(reader: &mut Reader<R>) 
             }
             Ok(Event::Text(ref e))
                 if current_field.is_some() => {
-                    text_buf.extend_from_slice(e.as_ref());
+                    text_buf.extend_from_slice(e.as_bytes());
                 }
             Ok(Event::End(ref e)) => {
                 if let Some(field) = current_field {
@@ -122,7 +122,7 @@ pub(crate) fn parse_feature_member<R: std::io::BufRead>(reader: &mut Reader<R>) 
                 }
 
                 let qname = e.name();
-                let name = std::str::from_utf8(qname.as_ref()).unwrap_or("");
+                let name = qname.as_ref();
                 match name {
                     "featureMember" | "gml:featureMember" => break,
                     "annenSkrivemåte" | "app:annenSkrivemåte" => inside_annen = false,

@@ -185,7 +185,7 @@ pub(crate) fn parse_netex(xml: &str) -> Result<ParseResult, Box<dyn std::error::
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => {
                 let qname = e.name();
-                let name = std::str::from_utf8(qname.as_ref())?;
+                let name = qname.as_ref();
                 match name {
                     "StopPlace" => {
                         let text = read_element_as_string(&mut reader, e)?;

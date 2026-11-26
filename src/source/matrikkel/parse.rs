@@ -111,7 +111,7 @@ pub(crate) fn build_kommune_mapping(gml_path: &Path) -> Result<HashMap<String, K
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => {
                 let qname = e.name();
-                let name = std::str::from_utf8(qname.as_ref()).unwrap_or("");
+                let name = qname.as_ref();
                 match local_name(name) {
                     "featureMember" => {
                         in_feature = true;
@@ -135,7 +135,7 @@ pub(crate) fn build_kommune_mapping(gml_path: &Path) -> Result<HashMap<String, K
             }
             Ok(Event::Text(ref e))
                 if current_field.is_some() => {
-                    text_buf.extend_from_slice(e.as_ref());
+                    text_buf.extend_from_slice(e.as_bytes());
                 }
             Ok(Event::End(ref e)) => {
                 // This commits text_buf on ANY closing tag, not just the one
@@ -156,7 +156,7 @@ pub(crate) fn build_kommune_mapping(gml_path: &Path) -> Result<HashMap<String, K
                 }
 
                 let qname = e.name();
-                let name = std::str::from_utf8(qname.as_ref()).unwrap_or("");
+                let name = qname.as_ref();
                 if local_name(name) == "featureMember" {
                     in_feature = false;
                     if let (Some(kn), Some(fn_), Some(fnavn)) = (&kommunenummer, &fylkesnummer, &fylkesnavn) {

@@ -1,22 +1,22 @@
 [package]
 name = "nominatim-converter"
-version = "0.10.3"
+version = "0.11.0"
 edition = "2024"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
-quick-xml = { version = "0.39", features = ["serialize"] }
+quick-xml = { version = "0.42", features = ["serialize"] }
 osmpbf = "0.3"
 clap = { version = "4", features = ["derive", "env"] }
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
-proj = { version = "0.31", features = ["bundled_proj"] }
+proj = { version = "0.32", features = ["bundled_proj"] }
 country-boundaries = "1"
 ureq = "3"
-base64 = "0.22"
-zip = { version = "8", default-features = false, features = ["deflate"] }
+base64 = "0.23"
+zip = { version = "9", default-features = false, features = ["deflate"] }
 iso3166-static = "0.4.3"
-rusqlite = { version = "0.35", features = ["bundled"] }
+rusqlite = { version = "0.43", features = ["bundled"] }
 dotenvy = "0.15"
 
 [features]
