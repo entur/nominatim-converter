@@ -73,7 +73,7 @@ codes); `municipality` needs Lantmäteriet Geotorget credentials in `LANTMATERIE
 For debugging and ad-hoc runs, one **local** file at a time. These never download.
 
 ```bash
-nominatim-converter stopplace  -i stop_places.xml -o out.ndjson -c converter.json --fare-zones fare-zones.xml
+nominatim-converter stopplace  -i stop_places.xml -o out.ndjson -c converter.json
 nominatim-converter matrikkel  -i adresse.csv -o out.ndjson -c converter.json -g stedsnavn.gml
 nominatim-converter stedsnavn  -i stedsnavn.gml -o out.ndjson -c converter.json
 nominatim-converter poi        -i poi.xml -o out.ndjson -c converter.json
@@ -99,19 +99,9 @@ nominatim-converter belagenhet -i belagenhetsadresser_kn0180.gpkg -o out.ndjson 
 
 ### Fare zones
 
-Stop place fare zones come from their own NeTEx export rather than from the stop place file:
-
-```json
-"stopPlace": {
-  "input":     { "url": "https://.../Current_latest.zip" },
-  "fareZones": { "input": { "url": "https://api.entur.io/distance/netex/fare-zones" } }
-}
-```
-
-`fareZones` is optional. Left out, the converter falls back to the `:FareZone:` refs NSR mirrors
-into each stop and the authorities in the same input's `<FareFrame>`, which on a full run
-reproduces the export exactly. That mirror is due to disappear, so set `fareZones` for anything
-long-lived. The two never mix.
+Stop place fare zones come from the `:FareZone:` refs in each stop's `<tariffZones>`, with
+authorities from the same input's `<FareFrame>`. A multimodal parent also carries its children's
+zones.
 
 ### Stop place dedupe
 

@@ -59,74 +59,22 @@ A GoSP's member stop names go in `address.other1`, `other2`, ... , which Photon 
 
 GoSP IDs listed in `stopPlace.groupOfStopPlaces.secondaryGosps` are demoted in autocomplete via two converter-side levers (no user-visible field is mutated): (1) importance is pinned to `SECONDARY_GOSP_IMPORTANCE` (0.001, hardcoded - must be strictly positive because Photon's `function_score` drops docs whose total collapses to zero), and (2) `rank_address` is set to 0, which maps the doc to Photon's `AddressType.OTHER` so it forfeits the +0.4 weight `SearchQueryBuilder.setupShortQuery` gives non-"other" docs. The list is explicit rather than heuristic-detected because the redundant-aggregator pattern (e.g. NSR:GroupOfStopPlaces:7 "Bergen" coexisting with GoSP:174 "Bergen sentrum") is hard to distinguish from canonical city aggregators that just happen to have a sibling. Today only GoSP:7 is configured.
 
-### Fare zones come from their own NeTEx export
+### Fare zones come from NSR
 
-Fare zones are **not** read from the stop place NeTEx. Their source is
-`https://api.entur.io/distance/netex/fare-zones` (the Distances and zones API, an open
-endpoint that 302s to a signed GCS URL), configured as `stopPlace.fareZones.input` for `build`,
-or passed as `--fare-zones` to the `stopplace` subcommand. NSR still mirrors fare
-zones into each stop's `<tariffZones>` as `:FareZone:`-shaped refs; with an export loaded those
-are ignored (`tariff_zone_refs` in `src/source/stopplace/convert.rs`), since they are due to
-disappear from the NSR export anyway. Without one they are the fallback: the mirrored refs
-become the fare zone IDs (sorted and deduped, as the export path's are), and their authorities
-come from the same input's own `<FareFrame>`, which declares all 485 zones with an
-`AuthorityRef`. The authority is not derivable from the zone prefix (`FIN:FareZone:31` belongs
-to `FIN:Authority:FIN_ID`), so it has to be read from a file either way.
+Fare zones are the `:FareZone:`-shaped refs in each stop's `<tariffZones>`, next to the
+`:TariffZone:` refs; `tariff_zone_refs` and `fare_zone_refs` in `src/source/stopplace/convert.rs`
+split them. Tiamat computes the assignment and keeps these refs. Authorities come from the
+input's own `<FareFrame>`, which declares every zone with an `AuthorityRef`; they are not
+derivable from the zone prefix (`FIN:FareZone:31` belongs to `FIN:Authority:FIN_ID`).
 
-`ZoneSource` in `convert.rs` resolves this once per run, before any stop is converted, and the
-two sources never mix: with an export configured the `<FareFrame>` is not consulted at all, and
-a stop the export places in no zone stays zone-less rather than falling back. Tariff zones still come from NSR - they are being retired too,
-but they cannot be derived from fare zones: the two systems disagree on membership for ~12k
-stops, and a handful of tariff zones have no fare zone counterpart.
+A multimodal parent's zones are unioned with its children's (`stop_fare_zones`): otherwise a
+hub can miss a zone its children are in, and since the proxy defaults to `multimodal=parent`,
+a zone filter then drops the hub and returns only its children. Downward only: a child never
+inherits its parent's or a sibling's zones.
 
-The export carries zone geometry, not stop references, so membership is derived per stop in
-`src/source/stopplace/farezone.rs`:
-
-- `ScopingMethod = explicitStops`: the zone's `<members>` (`NSR:ScheduledStopPoint:S<n>` is
-  `NSR:StopPlace:<n>`, verified against every PassengerStopAssignment). **Its outline must be
-  ignored** - those outlines cover far more stops than the zone has members, and honouring them
-  mis-assigns ~10k stops. Nine zones scope this way and list nobody; they match nothing, and say
-  so on stderr.
-- members name quays' stop places, never the multimodal parent above them, so a stop's zones are
-  unioned with its children's (`zones_with_children`). Without that, 49 of 1,100 parents lacked a
-  zone their own children were in, 35 of them via `explicitStops` - and because the proxy
-  defaults to `multimodal=parent`, a zone filter dropped the hub and returned only its children.
-  Downward only: a child never inherits its parent's or a sibling's zones.
-- everything else: point-in-polygon of the stop centroid against the outline, via the shared
-  `common::geometry` helpers.
-
-Checked against NSR's own assignment: one stop differs, where NSR held a stale zone version.
-
-Silent degradation is the risk that shapes the error handling here, because a zone-less index
-looks healthy to every downstream check (`minLines` counts stop places, which are unaffected).
-So an export that yields zero zones is a hard error, and a truncated download fails on the
-content-length check in `common::input`. Malformed geometry fails rather than degrades - an odd
-or unparsable `posList` would re-pair every coordinate, and a second outline would silently
-shrink a zone to one part.
-
-The NSR fallback is the one place that risk is accepted, and it holds up better than its name
-suggests. Diffed over a full run on 2026-08-26, the zone ID sets were identical on all 58,139
-records, multi-zone membership included; the authorities read from the `<FareFrame>` match the
-export on all 485 zones. That is structural rather than lucky - Tiamat holds the same zone
-definitions and computes the assignment itself, and the distance API republishes Tiamat's data,
-so the fallback is Tiamat's own answer for the same zones, not an independent guess. Zone
-versions can be ignored: the emitted category is version-less, IDs are stable across versions,
-and the two publishers version independently (the distance export runs 1-11 ahead on
-byte-identical content), so there is nothing to be stale against.
-
-What remains: a one-cycle lag if a geometry changes between Tiamat's recomputation and the next
-NSR dump (self-healing, historically 0-1 stops), no validation that a mirrored ref names a zone
-that exists, and the refs' pending removal from the NSR export. That last one is why
-`fallback_warning` separates "falling back on N of M stop places" from "no `:FareZone:` refs at
-all" - the second is the shape Sweden and Denmark already run
-(`converter-{sweden,denmark}-test.json` set no `fareZones`, and neither input holds a single
-`:FareZone:` ref), and the shape Norway takes the day the refs disappear. Nothing else would
-catch it: `minLines` counts stop places, which are unaffected.
-
-Zone data changes a few times a month, so `build` resolves it with a 30x `--warn-if-stale`
-threshold; the run-wide value is tuned for daily sources. It is resolved before the multi-GB
-sources so a fetch failure costs nothing. Requests to `api.entur.io` carry Entur's
-`ET-Client-Name` header alongside the User-Agent.
+An input with no `:FareZone:` refs at all warns on stderr. That is the normal shape for Sweden
+and Denmark (`converter-{sweden,denmark}-test.json`); for Norway it means the NSR export changed,
+and nothing else would catch it (`minLines` counts stop places, which are unaffected).
 
 ### Optional per-source minimum line count (`minLines` / `--min-lines`)
 
@@ -190,7 +138,7 @@ This converter produces `nominatim.ndjson` which is imported into the **Photon g
 - **source (extra field)** — Acceptance tests filter by data source (`openaddresses`, `openstreetmap`). Source tags must match expected values.
 - **importance** — Directly affects result ranking. Acceptance tests use `priorityThresh` to verify top-N placement.
 - **county_gid / locality_gid (extra fields)** — Used for `boundary.county_ids` filtering. Swedish boundaries use `LAN:` and their SCB code (`ref:scb`), matching belagenhet. Must support both full (`KVE:TopographicPlace:18`) and numeric (`18`) formats.
-- **tariff_zones / fare_zones (extra fields)** — Used for zone-based filtering downstream. Tariff zones come from the stop place NeTEx; fare zones from the separate fare zone export.
+- **tariff_zones / fare_zones (extra fields)** — Used for zone-based filtering downstream. Both come from the stop place NeTEx.
 - **centroid coordinates** — Reverse geocoding, focus-point disambiguation, and distance calculations all depend on coordinate accuracy.
 
 ### Acceptance test patterns worth knowing
@@ -206,7 +154,7 @@ This converter produces `nominatim.ndjson` which is imported into the **Photon g
 
 All source converters have unit tests (`cargo test --release` runs ~240 tests). Coverage by module:
 
-1. **stopplace** (59 tests): NeTEx parsing, fare zone membership (outline match, explicitStops members, ordering), popularity calculation (base × type factors × strongest interchange across a stop and its children), GroupOfStopPlaces popularity (product of member popularities), transport mode formatting (mode:submode, parent collecting children with dedup), alt name handling (label → visible, translation → indexed only), GoSP member names as flattened `other*` address keys, category generation (funicular included, bus excluded, multimodal.parent marker), zone category ordering, full conversion integration tests (coordinates, authority categories, county_gid/locality_gid, secondary-GoSP importance cap and rank_address)
+1. **stopplace** (59 tests): NeTEx parsing, fare zones (NSR refs, FareFrame authorities, parent inherits children's, ordering), popularity calculation (base × type factors × strongest interchange across a stop and its children), GroupOfStopPlaces popularity (product of member popularities), transport mode formatting (mode:submode, parent collecting children with dedup), alt name handling (label → visible, translation → indexed only), GoSP member names as flattened `other*` address keys, category generation (funicular included, bus excluded, multimodal.parent marker), zone category ordering, full conversion integration tests (coordinates, authority categories, county_gid/locality_gid, secondary-GoSP importance cap and rank_address)
 2. **stedsnavn** (22 tests): Target type recognition (by/bydel/tettsted/tettsteddel/tettbebyggelse), spelling status filtering (vedtatt/godkjent/privat/samlevedtak accepted), GML parsing with historisk alt spelling, diacritics preservation, field validation (source, accuracy, country_code, importance, rank_address), locality/county GID format, coordinate ranges, titleized names
 3. **matrikkel** (12 tests): CSV→NDJSON conversion, field validation (id, source, accuracy, country_a, locality, borough, housenumber with letter suffix), county population via stedsnavn GML, address + street entry generation, category correctness, coordinate validity, importance range, county GID in categories
 4. **poi** (7 tests): ValidBetween date filtering (valid/expired/future/always-valid/open-ended), coordinate and category correctness
@@ -215,8 +163,7 @@ All source converters have unit tests (`cargo test --release` runs ~240 tests). 
 
 ### Test data fixtures
 
-- `test-data/stopPlaces.xml` — NeTEx with TopographicPlaces (counties/municipalities for topo lookups), 2 GroupOfStopPlaces, 6 StopPlaces (bus, rail, parent, child, alt names, submodes). Its `<FareFrame>` and the stops' `:FareZone:` refs are kept deliberately: NSR still ships them, and the tests prove the converter ignores them
-- `test-data/fareZones.xml` — fare zone export: 3 spatial zones around the stop fixtures, one `explicitStops` zone whose outline covers both Oslo stops but which lists only one as a member, and one `explicitStops` zone with no members at all
+- `test-data/stopPlaces.xml` — NeTEx with TopographicPlaces (counties/municipalities for topo lookups), 2 GroupOfStopPlaces, 6 StopPlaces (bus, rail, parent, child, alt names, submodes). Its `<FareFrame>` and the stops' `:FareZone:` refs are the fare zone source
 - `test-data/poi-test.xml` — 5 TopographicPlaces with varying validity periods
 - `test-data/bydel.gml` — 2 Oslo bydeler (Grünerløkka, Frogner) in UTM33
 - `test-data/Basisdata_3420_Elverum_25833_MatrikkelenAdresse.csv` — Real Elverum address data (10,871 lines)

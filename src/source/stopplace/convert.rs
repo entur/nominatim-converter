@@ -29,7 +29,6 @@ const SECONDARY_GOSP_IMPORTANCE: f64 = 0.001;
 /// the viable band is tight (~0.88-0.96), so re-check the `oslo`/`olso` acceptance tests if changed.
 const GOSP_IMPORTANCE_CAP: f64 = 0.92;
 
-use super::farezone::FareZones;
 use super::popularity::{calculate_stop_popularity, popularity_with, stop_factors};
 use super::registers::{fold, SkipSet, StopPoint};
 use super::xml::*;
@@ -39,14 +38,13 @@ pub fn convert_all(
     input: &Path,
     output: &Path,
     is_appending: bool,
-    fare_zone_input: Option<&Path>,
     usage: &UsageBoost,
     skip: &SkipSet,
 ) -> Result<usize, Box<dyn std::error::Error>> {
     let stop_place = config.stop_place.as_ref().ok_or("config is missing the required `stopPlace` section")?;
     let xml = std::fs::read_to_string(input)?;
     let result = parse_netex(&xml)?;
-    let zone_source = ZoneSource::resolve(fare_zone_input, &result)?;
+    if let Some(w) = no_fare_zones_warning(&result) { eprintln!("{w}"); }
     let importance_calc = ImportanceCalculator::new(usage).with_country_factors(&config.country_importance_factors);
 
     let child_stops = child_stops(&result);
@@ -71,7 +69,7 @@ pub fn convert_all(
 
         if let Some(entry) = convert_stop_place(
             stop_place, &importance_calc, sp, &result.topo_places,
-            &zone_source, pop, children, skip,
+            &result.fare_zone_authorities, pop, children, skip,
         ) {
             entries.push(entry);
         }
@@ -104,88 +102,29 @@ pub fn convert_all(
     Ok(count)
 }
 
-/// Where a run's fare zones come from. Resolved once, before any stop is converted: a
-/// configured export is the sole source, so a stop it places in no zone stays zone-less and
-/// NSR's mirrored refs are never consulted.
-pub(crate) enum ZoneSource<'a> {
-    Export(FareZones),
-    /// NSR's mirrored `:FareZone:` refs, with the zone -> authority map from the same input's
-    /// `<FareFrame>` (the refs themselves carry no authority).
-    NsrRefs(&'a HashMap<String, String>),
+/// A stop's fare zones from NSR's `:FareZone:` refs, plus every zone its children are in.
+/// Without the union a multimodal parent can miss zones its children sit in, and since the
+/// proxy defaults to `multimodal=parent`, a zone filter then hides the hub.
+fn stop_fare_zones(
+    sp: &StopPlaceXml,
+    children: &[&StopPlaceXml],
+    authorities: &HashMap<String, String>,
+) -> StopFareZones {
+    let ids: Vec<String> = std::iter::once(sp).chain(children.iter().copied())
+        .flat_map(fare_zone_refs)
+        .map(String::from)
+        .collect();
+    let authorities = ids.iter().filter_map(|id| authorities.get(id).cloned()).collect();
+    let mut zones = StopFareZones { ids, authorities };
+    zones.sort_dedup();
+    zones
 }
 
-impl<'a> ZoneSource<'a> {
-    pub(crate) fn resolve(
-        input: Option<&Path>,
-        parsed: &'a ParseResult,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
-        let Some(path) = input else {
-            eprintln!("{}", fallback_warning(parsed));
-            return Ok(Self::NsrRefs(&parsed.fare_zone_authorities));
-        };
-        let zones = FareZones::load(path)?;
-        if zones.is_empty() {
-            // A zone-less index looks healthy from every downstream check, so stop here instead.
-            return Err(format!("fare zone input {} holds no zones", path.display()).into());
-        }
-        Ok(Self::Export(zones))
-    }
-
-    /// A stop's own fare zones, plus every zone its children are in. `explicitStops` zones list
-    /// a child's ScheduledStopPoint and never the parent's, so without the union a multimodal
-    /// parent misses zones all of its children sit in - and since the proxy defaults to
-    /// `multimodal=parent`, a zone filter then hides the hub and returns only its children.
-    fn zones_with_children(
-        &self,
-        sp: &StopPlaceXml,
-        coord: &Coordinate,
-        children: &[&StopPlaceXml],
-    ) -> StopFareZones {
-        let mut zones = self.zones_for(sp, coord);
-        for child in children {
-            let Some(centroid) = child.centroid.as_ref() else { continue };
-            let child_zones =
-                self.zones_for(child, &Coordinate::new(centroid.location.latitude, centroid.location.longitude));
-            zones.ids.extend(child_zones.ids);
-            zones.authorities.extend(child_zones.authorities);
-        }
-        zones.sort_dedup();
-        zones
-    }
-
-    /// One stop's fare zones. Never mixes the two sources.
-    fn zones_for(&self, sp: &StopPlaceXml, coord: &Coordinate) -> StopFareZones {
-        match self {
-            Self::Export(zones) => {
-                let matched = zones.zones_for(&sp.id, coord);
-                StopFareZones {
-                    ids: matched.iter().map(|z| z.id.clone()).collect(),
-                    authorities: matched.iter().filter_map(|z| z.authority.clone()).collect(),
-                }
-            }
-            Self::NsrRefs(authorities) => {
-                let ids: Vec<String> = nsr_fare_zone_refs(sp).map(String::from).collect();
-                let auths = ids.iter().filter_map(|id| authorities.get(id).cloned()).collect();
-                StopFareZones { ids, authorities: auths }
-            }
-        }
-    }
-}
-
-/// The fallback finding nothing is as silent as a zone-less export, which is a hard error, so
-/// say which of the two shapes this run is: refs present, or none at all.
-fn fallback_warning(parsed: &ParseResult) -> String {
-    let with_refs = parsed.stop_places.iter()
-        .filter(|sp| nsr_fare_zone_refs(sp).next().is_some())
-        .count();
-    let total = parsed.stop_places.len();
-    if with_refs == 0 {
-        format!("warning: no fare zone input and no :FareZone: refs in {total} stop places; \
-                 the index has no fare zones at all")
-    } else {
-        format!("warning: no fare zone input; falling back to NSR's mirrored :FareZone: refs \
-                 on {with_refs} of {total} stop places")
-    }
+/// Sweden and Denmark carry no `:FareZone:` refs; for Norway it means NSR stopped carrying them.
+fn no_fare_zones_warning(parsed: &ParseResult) -> Option<String> {
+    let none = !parsed.stop_places.iter().any(|sp| fare_zone_refs(sp).next().is_some());
+    none.then(|| format!("warning: no :FareZone: refs in {} stop places; the index has no fare zones",
+                         parsed.stop_places.len()))
 }
 
 /// Log the configured secondary-GoSP demotions (and warn about configured IDs that
@@ -287,7 +226,7 @@ pub(crate) fn convert_stop_place(
     importance_calc: &ImportanceCalculator,
     sp: &StopPlaceXml,
     topo_places: &HashMap<String, TopographicPlaceXml>,
-    zone_source: &ZoneSource,
+    fare_zone_authorities: &HashMap<String, String>,
     popularity: i64,
     child_stops: &[&StopPlaceXml],
     skip: &SkipSet,
@@ -313,7 +252,7 @@ pub(crate) fn convert_stop_place(
         .chain(sp.stop_place_type.iter().cloned())
         .collect();
 
-    let zones = zone_source.zones_with_children(sp, &coord, child_stops);
+    let zones = stop_fare_zones(sp, child_stops, fare_zone_authorities);
 
     let StopCategories { visible: visible_cats, indexed: indexed_cats } = build_stop_categories(
         sp, &role, &inferred_types, &country, &geography, &zones,
@@ -450,10 +389,9 @@ fn build_stop_categories(
 
 /// Append zone categories in 4 passes:
 /// 1. Tariff zone IDs from the stop's zone refs (`tariff_zone_id.RUT.TariffZone.1`)
-/// 2. Fare zone IDs from the export, or NSR's mirrored refs (`fare_zone_id.RUT.FareZone.4`)
+/// 2. Fare zone IDs from the stop's and its children's zone refs (`fare_zone_id.RUT.FareZone.4`)
 /// 3. Tariff zone authorities from the ref prefixes (`tariff_zone_authority.RUT`)
-/// 4. Fare zone authorities from each zone's AuthorityRef, export-only
-///    (`fare_zone_authority.RUT.Authority.RUT`)
+/// 4. Fare zone authorities from the input's `<FareFrame>` (`fare_zone_authority.RUT.Authority.RUT`)
 fn append_zone_categories(
     indexed_cats: &mut Vec<String>,
     sp: &StopPlaceXml,
@@ -485,13 +423,12 @@ fn append_zone_categories(
     }
 }
 
-/// The stop's `:TariffZone:`-shaped refs. NSR's mirrored `:FareZone:` refs are not tariff zones.
+/// The stop's `:TariffZone:`-shaped refs. `:FareZone:` refs share the element but are not tariff zones.
 fn tariff_zone_refs(sp: &StopPlaceXml) -> impl Iterator<Item = &str> {
     zone_refs(sp).filter(|ref_| !ref_.contains(":FareZone:"))
 }
 
-/// NSR's mirrored `:FareZone:` refs, used only when no export is configured.
-fn nsr_fare_zone_refs(sp: &StopPlaceXml) -> impl Iterator<Item = &str> {
+fn fare_zone_refs(sp: &StopPlaceXml) -> impl Iterator<Item = &str> {
     zone_refs(sp).filter(|ref_| ref_.contains(":FareZone:"))
 }
 
@@ -502,17 +439,15 @@ fn zone_refs(sp: &StopPlaceXml) -> impl Iterator<Item = &str> {
 }
 
 /// One stop's fare zones. Authority refs look like `RUT:Authority:RUT`; they can't be derived
-/// from the zone prefix (`FIN:FareZone:31` -> `FIN:Authority:FIN_ID`), so both sources read
-/// them from their own input.
+/// from the zone prefix (`FIN:FareZone:31` -> `FIN:Authority:FIN_ID`), so they come from the
+/// input's `<FareFrame>`.
 struct StopFareZones {
     ids: Vec<String>,
     authorities: Vec<String>,
 }
 
 impl StopFareZones {
-    /// Both paths end up here, so a fallback index's IDs land in the same order as an export
-    /// one's (`FareZones::load` sorts and dedups), and NSR listing a zone twice can't duplicate
-    /// a category.
+    /// A zone shared by a parent and its children, or listed twice, must not duplicate a category.
     fn sort_dedup(&mut self) {
         for v in [&mut self.ids, &mut self.authorities] {
             v.sort();
@@ -846,9 +781,9 @@ mod tests {
     static NO_AUTHORITIES: std::sync::LazyLock<HashMap<String, String>> =
         std::sync::LazyLock::new(HashMap::new);
 
-    /// Neither an export nor any NSR authority: stops get whatever their own refs say.
-    fn no_zones() -> ZoneSource<'static> {
-        ZoneSource::NsrRefs(&NO_AUTHORITIES)
+    /// No `<FareFrame>` authorities: stops get whatever their own refs say.
+    fn no_zones() -> &'static HashMap<String, String> {
+        &NO_AUTHORITIES
     }
 
     fn stop_line<'a>(content: &'a str, stop_id: &str) -> &'a str {
@@ -955,7 +890,7 @@ mod tests {
         ]);
         let result = convert_stop_place(
             config.stop_place.as_ref().unwrap(), &importance_calc, &parent, &HashMap::new(),
-            &no_zones(), 50, &[&child_rail, &child_tram], &SkipSet::default(),
+            no_zones(), 50, &[&child_rail, &child_tram], &SkipSet::default(),
         ).unwrap();
         // Trailing "Nationaltheatret" is the tram child's name: child names are only deduped,
         // not filtered against the parent's name.
@@ -982,7 +917,7 @@ mod tests {
         let alt_name = |sp: &StopPlaceXml, children: &[&StopPlaceXml]| {
             let place = convert_stop_place(
                 config.stop_place.as_ref().unwrap(), &importance_calc, sp, &HashMap::new(),
-                &no_zones(), 50, children, &skip,
+                no_zones(), 50, children, &skip,
             ).unwrap();
             place.content[0].name.as_ref().unwrap().alt_name.clone()
         };
@@ -999,7 +934,7 @@ mod tests {
         let sp = make_stop_place("SSR:StopPlace:1", "Test", Some("rail"), Some("railStation"));
         let result = convert_stop_place(
             config.stop_place.as_ref().unwrap(), &importance_calc, &sp, &HashMap::new(),
-            &no_zones(), 50, &[], &SkipSet::default(),
+            no_zones(), 50, &[], &SkipSet::default(),
         ).unwrap();
         let content = &result.content[0];
         assert_eq!(content.extra.source.as_deref(), Some("ssr"));
@@ -1014,7 +949,7 @@ mod tests {
         let sp = make_stop_place("NSR:StopPlace:1", "Test", Some("funicular"), Some("other"));
         let result = convert_stop_place(
             config.stop_place.as_ref().unwrap(), &importance_calc, &sp, &HashMap::new(),
-            &no_zones(), 50, &[], &SkipSet::default(),
+            no_zones(), 50, &[], &SkipSet::default(),
         ).unwrap();
         let cats = &result.content[0].categories;
         assert!(cats.iter().any(|c| c == "legacy.category.funicular"));
@@ -1028,7 +963,7 @@ mod tests {
         let sp = make_stop_place("NSR:StopPlace:1", "Test", Some("bus"), Some("onstreetBus"));
         let result = convert_stop_place(
             config.stop_place.as_ref().unwrap(), &importance_calc, &sp, &HashMap::new(),
-            &no_zones(), 50, &[], &SkipSet::default(),
+            no_zones(), 50, &[], &SkipSet::default(),
         ).unwrap();
         let cats = &result.content[0].categories;
         assert!(!cats.iter().any(|c| c == "legacy.category.bus"));
@@ -1042,7 +977,7 @@ mod tests {
         let sp = make_stop_place("NSR:StopPlace:1", "Test", Some("rail"), Some("railStation"));
         let result = convert_stop_place(
             config.stop_place.as_ref().unwrap(), &importance_calc, &sp, &HashMap::new(),
-            &no_zones(), 50, &[], &SkipSet::default(),
+            no_zones(), 50, &[], &SkipSet::default(),
         ).unwrap();
         let cats = &result.content[0].categories;
         assert!(cats.iter().any(|c| c == "stop_place_type.railStation"), "{cats:?}");
@@ -1058,7 +993,7 @@ mod tests {
         let metro = make_stop_place("NSR:StopPlace:C3", "Metro", None, Some("metroStation"));
         let result = convert_stop_place(
             config.stop_place.as_ref().unwrap(), &importance_calc, &sp, &HashMap::new(),
-            &no_zones(), 50, &[&bus, &rail, &metro], &SkipSet::default(),
+            no_zones(), 50, &[&bus, &rail, &metro], &SkipSet::default(),
         ).unwrap();
         let cats = &result.content[0].categories;
         assert!(cats.iter().any(|c| c == "legacy.category.funicular"));
@@ -1083,7 +1018,7 @@ mod tests {
         let standalone = make_stop_place("NSR:StopPlace:Solo", "Solo", Some("bus"), Some("onstreetBus"));
         let res = convert_stop_place(
             config.stop_place.as_ref().unwrap(), &importance_calc, &standalone, &HashMap::new(),
-            &no_zones(), 50, &[], &SkipSet::default(),
+            no_zones(), 50, &[], &SkipSet::default(),
         ).unwrap();
         assert_eq!(res.content[0].extra.stop_place_role.as_deref(), Some("standalone"));
 
@@ -1092,7 +1027,7 @@ mod tests {
         child.parent_site_ref = Some(RefAttr { ref_: "NSR:StopPlace:Parent".to_string() });
         let res = convert_stop_place(
             config.stop_place.as_ref().unwrap(), &importance_calc, &child, &HashMap::new(),
-            &no_zones(), 50, &[], &SkipSet::default(),
+            no_zones(), 50, &[], &SkipSet::default(),
         ).unwrap();
         assert_eq!(res.content[0].extra.stop_place_role.as_deref(), Some("child"));
 
@@ -1102,7 +1037,7 @@ mod tests {
         let bus_child = make_stop_place("NSR:StopPlace:C1", "Bus", None, Some("onstreetBus"));
         let res = convert_stop_place(
             config.stop_place.as_ref().unwrap(), &importance_calc, &both, &HashMap::new(),
-            &no_zones(), 50, &[&bus_child], &SkipSet::default(),
+            no_zones(), 50, &[&bus_child], &SkipSet::default(),
         ).unwrap();
         assert_eq!(res.content[0].extra.stop_place_role.as_deref(), Some("parent"));
     }
@@ -1137,7 +1072,7 @@ mod tests {
         let config = test_config();
         let input = test_data_path("stopPlaces.xml");
         let output = std::env::temp_dir().join("test_stopplace_convert_output.ndjson");
-        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &SkipSet::default()).unwrap();
+        convert_all(&config, &input, &output, false, &UsageBoost::empty(), &SkipSet::default()).unwrap();
         let content = std::fs::read_to_string(&output).unwrap();
         assert!(content.contains("NominatimDumpFile"));
         assert!(content.contains("NSR:StopPlace:56697"));
@@ -1156,7 +1091,7 @@ mod tests {
             // all members of NSR:GroupOfStopPlaces:72
             "NSR:StopPlace:56851", "NSR:StopPlace:56689", "NSR:StopPlace:56676", "NSR:StopPlace:59048",
         ]);
-        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &skip).unwrap();
+        convert_all(&config, &input, &output, false, &UsageBoost::empty(), &skip).unwrap();
         let content = std::fs::read_to_string(&output).unwrap();
         assert!(!content.contains("\"id\":\"NSR:StopPlace:56697\""));
         assert!(!content.contains("\"id\":\"NSR:StopPlace:59650\""));
@@ -1176,7 +1111,7 @@ mod tests {
         let output = std::env::temp_dir().join("test_stopplace_replaced_group.ndjson");
         let mut skip = skip_ids(&["NSR:StopPlace:56851", "NSR:StopPlace:56689", "NSR:StopPlace:56676", "NSR:StopPlace:59048"]);
         skip.replaced.insert("NSR:StopPlace:56689".to_string());
-        convert_all(&test_config(), &test_data_path("stopPlaces.xml"), &output, false, None, &UsageBoost::empty(), &skip).unwrap();
+        convert_all(&test_config(), &test_data_path("stopPlaces.xml"), &output, false, &UsageBoost::empty(), &skip).unwrap();
         let content = std::fs::read_to_string(&output).unwrap();
         let _ = std::fs::remove_file(&output);
         assert!(content.contains("\"id\":\"NSR:GroupOfStopPlaces:72\""));
@@ -1192,7 +1127,7 @@ mod tests {
                 carried_factors: HashMap::from([("NSR:StopPlace:56697".to_string(), factors)]),
                 ..SkipSet::default()
             };
-            convert_all(&test_config(), &test_data_path("stopPlaces.xml"), &output, false, None, &UsageBoost::empty(), &skip).unwrap();
+            convert_all(&test_config(), &test_data_path("stopPlaces.xml"), &output, false, &UsageBoost::empty(), &skip).unwrap();
             let content = std::fs::read_to_string(&output).unwrap();
             let _ = std::fs::remove_file(&output);
             let line: serde_json::Value = serde_json::from_str(stop_line(&content, "NSR:StopPlace:56697")).unwrap();
@@ -1221,7 +1156,7 @@ mod tests {
         let group_line = |skip: &[&str]| {
             let output = std::env::temp_dir().join("test_skipped_parent.ndjson");
             let skip = skip_ids(skip);
-            convert_all(&test_config(), &input, &output, false, None, &UsageBoost::empty(), &skip).unwrap();
+            convert_all(&test_config(), &input, &output, false, &UsageBoost::empty(), &skip).unwrap();
             let content = std::fs::read_to_string(&output).unwrap();
             let _ = std::fs::remove_file(&output);
             (stop_line(&content, "NSR:GroupOfStopPlaces:1").to_string(), content)
@@ -1238,7 +1173,7 @@ mod tests {
         let config = test_config();
         let input = test_data_path("stopPlaces.xml");
         let output = std::env::temp_dir().join("test_gosp_convert_output.ndjson");
-        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &SkipSet::default()).unwrap();
+        convert_all(&config, &input, &output, false, &UsageBoost::empty(), &SkipSet::default()).unwrap();
         let content = std::fs::read_to_string(&output).unwrap();
         assert!(content.contains("NSR:GroupOfStopPlaces:1"));
         assert!(content.contains("NSR:GroupOfStopPlaces:72"));
@@ -1405,8 +1340,7 @@ mod tests {
         let sp: StopPlaceConfig = serde_json::from_str(
             r#"{ "input": { "file": "unused" }, "defaultValue": 50, "rankAddress": 30,
                  "stopTypeFactors": { "railStation": 2.0, "busStation": 2.0 },
-                 "interchangeFactors": { "preferredInterchange": 10.0 },
-                 "fareZones": { "input": { "file": "unused" } } }"#,
+                 "interchangeFactors": { "preferredInterchange": 10.0 } }"#,
         ).unwrap();
         let factors: CountryFactors = serde_json::from_str(r#"{"*": 0.6, "no": 1.0}"#).unwrap();
         let importance_calc = ImportanceCalculator::new(&EMPTY_USAGE).with_country_factors(&factors);
@@ -1449,7 +1383,7 @@ mod tests {
         let importance = |calc: &ImportanceCalculator, lat: f64, lon: f64| {
             let mut sp = make_stop_place("SSR:StopPlace:1", "Stop", Some("bus"), None);
             sp.centroid = Some(CentroidXml { location: LocationXml { longitude: lon, latitude: lat } });
-            let place = convert_stop_place(stop_place, calc, &sp, &HashMap::new(), &ZoneSource::NsrRefs(&zones),
+            let place = convert_stop_place(stop_place, calc, &sp, &HashMap::new(), &zones,
                 1_000, &[], &SkipSet::default()).unwrap();
             place.content[0].importance.0.parse::<f64>().unwrap()
         };
@@ -1515,7 +1449,7 @@ mod tests {
             vec!["NSR:GroupOfStopPlaces:1".to_string()];
         let input = test_data_path("stopPlaces.xml");
         let output = std::env::temp_dir().join("test_secondary_gosp_cap.ndjson");
-        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &SkipSet::default()).unwrap();
+        convert_all(&config, &input, &output, false, &UsageBoost::empty(), &SkipSet::default()).unwrap();
         let content = std::fs::read_to_string(&output).unwrap();
         let _ = std::fs::remove_file(&output);
 
@@ -1549,7 +1483,7 @@ mod tests {
         let config = test_config();
         let input = test_data_path("stopPlaces.xml");
         let output = std::env::temp_dir().join("test_convert_valid_json.ndjson");
-        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &SkipSet::default()).unwrap();
+        convert_all(&config, &input, &output, false, &UsageBoost::empty(), &SkipSet::default()).unwrap();
         let lines: Vec<String> = std::fs::read_to_string(&output).unwrap().lines().map(String::from).collect();
         assert!(!lines.is_empty());
         for line in &lines {
@@ -1564,7 +1498,7 @@ mod tests {
         let config = test_config();
         let input = test_data_path("stopPlaces.xml");
         let output = std::env::temp_dir().join("test_convert_coords.ndjson");
-        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &SkipSet::default()).unwrap();
+        convert_all(&config, &input, &output, false, &UsageBoost::empty(), &SkipSet::default()).unwrap();
         let lines: Vec<String> = std::fs::read_to_string(&output).unwrap().lines()
             .filter(|l| l.contains("NSR:StopPlace:"))
             .map(String::from).collect();
@@ -1576,38 +1510,21 @@ mod tests {
     }
 
     #[test]
-    fn stop_places_have_fare_zone_authority_categories() {
+    fn fare_zones_come_from_nsr_refs() {
         let config = test_config();
         let input = test_data_path("stopPlaces.xml");
-        let output = std::env::temp_dir().join("test_convert_authority.ndjson");
-        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &SkipSet::default()).unwrap();
+        let output = std::env::temp_dir().join("test_convert_fare_zones.ndjson");
+        convert_all(&config, &input, &output, false, &UsageBoost::empty(), &SkipSet::default()).unwrap();
         let content = std::fs::read_to_string(&output).unwrap();
-        assert!(content.contains("fare_zone_authority.FIN.Authority.FIN_ID"));
-        assert!(content.contains("fare_zone_authority.RUT.Authority.RUT"));
-        let _ = std::fs::remove_file(&output);
-    }
-
-    #[test]
-    fn without_an_export_fare_zones_fall_back_to_nsr_refs() {
-        let config = test_config();
-        let input = test_data_path("stopPlaces.xml");
-        let output = std::env::temp_dir().join("test_convert_fare_zone_fallback.ndjson");
-        convert_all(&config, &input, &output, false, None, &UsageBoost::empty(), &SkipSet::default()).unwrap();
-        let content = std::fs::read_to_string(&output).unwrap();
-        // RUT:FareZone:99 exists only as an NSR ref, so it proves the fallback ran.
-        assert!(content.contains("fare_zone_id.RUT.FareZone.99"));
-        // Extra field too, sorted and deduped: NSR lists 99 first and twice.
-        assert!(content.contains("\"fare_zones\":\"RUT:FareZone:4;RUT:FareZone:99\""));
-        assert!(!content.contains("tariff_zone_id.RUT.FareZone"), "still not tariff zones");
-        // Authorities come from the input's own FareFrame, which declares RUT_ID where the
-        // export says RUT - so this also pins which source the run used.
+        // Sorted and deduped: Nyland lists 99 first and twice.
+        let nyland = stop_line(&content, "NSR:StopPlace:305");
+        assert!(nyland.contains("\"fare_zones\":\"RUT:FareZone:4;RUT:FareZone:99\""), "got: {nyland}");
+        assert!(nyland.contains("\"tariff_zones\":\"RUT:TariffZone:1\""), "got: {nyland}");
+        // Authorities come from the input's FareFrame.
         assert!(content.contains("fare_zone_authority.RUT.Authority.RUT_ID"));
         assert!(content.contains("fare_zone_authority.FIN.Authority.FIN_ID"));
         // The FareFrame declares no zone for RUT:FareZone:99, so that ref stays authority-less.
         assert!(!content.contains("fare_zone_authority.RUT.Authority.RUT\""));
-        // The hub carries no refs of its own; both zones come from its two children.
-        let hub = stop_line(&content, "NSR:StopPlace:59650");
-        assert!(hub.contains("\"fare_zones\":\"RUT:FareZone:4;RUT:FareZone:99\""), "got: {hub}");
         let _ = std::fs::remove_file(&output);
     }
 
@@ -1616,14 +1533,13 @@ mod tests {
         let config = test_config();
         let input = test_data_path("stopPlaces.xml");
         let output = std::env::temp_dir().join("test_convert_parent_zones.ndjson");
-        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &SkipSet::default()).unwrap();
+        convert_all(&config, &input, &output, false, &UsageBoost::empty(), &SkipSet::default()).unwrap();
         let content = std::fs::read_to_string(&output).unwrap();
 
-        // RUT:FareZone:13 scopes to explicit stops and lists only the child 59649, so the hub
-        // can hold it by inheritance alone. Its own outline match is RUT:FareZone:4.
+        // The hub carries no refs of its own; both zones come from its two children.
         let hub = stop_line(&content, "NSR:StopPlace:59650");
-        assert!(hub.contains("\"fare_zones\":\"RUT:FareZone:13;RUT:FareZone:4\""), "got: {hub}");
-        assert!(hub.contains("fare_zone_id.RUT.FareZone.13"));
+        assert!(hub.contains("\"fare_zones\":\"RUT:FareZone:4;RUT:FareZone:99\""), "got: {hub}");
+        assert!(hub.contains("fare_zone_id.RUT.FareZone.99"));
 
         // Downward only: 59649 must not pick up sibling 305's zones through the parent.
         let sibling = stop_line(&content, "NSR:StopPlace:59649");
@@ -1632,16 +1548,16 @@ mod tests {
     }
 
     #[test]
-    fn fallback_warning_distinguishes_no_refs_from_some() {
+    fn warns_only_without_any_fare_zone_refs() {
         let xml = std::fs::read_to_string(test_data_path("stopPlaces.xml")).unwrap();
         let mut parsed = parse_netex(&xml).unwrap();
-        assert!(fallback_warning(&parsed).contains("falling back to NSR"));
+        assert!(no_fare_zones_warning(&parsed).is_none());
 
-        // Same shape as the sweden/denmark runs, and as the day NSR drops the refs.
+        // The shape of the sweden/denmark runs.
         for sp in &mut parsed.stop_places {
             sp.tariff_zones = None;
         }
-        assert!(fallback_warning(&parsed).contains("no fare zones at all"));
+        assert!(no_fare_zones_warning(&parsed).is_some());
     }
 
     #[test]
@@ -1649,43 +1565,16 @@ mod tests {
         let config = test_config();
         let input = test_data_path("stopPlaces.xml");
         let output = std::env::temp_dir().join("test_convert_zone_id_split.ndjson");
-        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &SkipSet::default()).unwrap();
+        convert_all(&config, &input, &output, false, &UsageBoost::empty(), &SkipSet::default()).unwrap();
         let content = std::fs::read_to_string(&output).unwrap();
         // NSR's <TariffZoneRef>s land under tariff_zone_id.
         assert!(content.contains("tariff_zone_id.RUT.TariffZone.1"));
         assert!(content.contains("tariff_zone_id.FIN.TariffZone.54540"));
-        // Fare zones come from the fare zone export, matched by outline. FareZone:13 is
-        // membership-derived and FareZone:99 is NSR's alone, so the pair pins the source.
-        assert!(content.contains("fare_zone_id.RUT.FareZone.13"));
+        // :FareZone: refs share the element but land under fare_zone_id.
+        assert!(content.contains("fare_zone_id.RUT.FareZone.4"));
         assert!(content.contains("fare_zone_id.FIN.FareZone.31"));
-        assert!(!content.contains("FareZone.99"));
-        // NSR's mirrored :FareZone: refs are dropped, not re-indexed as tariff zones.
         assert!(!content.contains("tariff_zone_id.RUT.FareZone"));
         assert!(!content.contains("tariff_zone_id.FIN.FareZone"));
-        let _ = std::fs::remove_file(&output);
-    }
-
-    #[test]
-    fn zones_come_from_the_export_not_from_nsr() {
-        let config = test_config();
-        let input = test_data_path("stopPlaces.xml");
-        let output = std::env::temp_dir().join("test_convert_zone_sources.ndjson");
-        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &SkipSet::default()).unwrap();
-        let content = std::fs::read_to_string(&output).unwrap();
-
-        // Nydalen: NSR gives it RUT:TariffZone:1; the export adds RUT:FareZone:4 by outline
-        // and RUT:FareZone:13 by membership.
-        let nydalen = stop_line(&content, "NSR:StopPlace:59649");
-        assert!(nydalen.contains("\"tariff_zones\":\"RUT:TariffZone:1\""), "got: {nydalen}");
-        assert!(nydalen.contains("\"fare_zones\":\"RUT:FareZone:13;RUT:FareZone:4\""), "got: {nydalen}");
-
-        // Nyland carries a stale mirrored RUT:FareZone:99 in NSR that the export disagrees
-        // with, and sits inside RUT:FareZone:13's outline without being a member. It should
-        // end up with the export's answer only.
-        let nyland = stop_line(&content, "NSR:StopPlace:305");
-        assert!(nyland.contains("\"fare_zones\":\"RUT:FareZone:4\""), "got: {nyland}");
-        assert!(!nyland.contains("FareZone:99"), "NSR's mirrored ref must be dropped: {nyland}");
-        assert!(!nyland.contains("FareZone.13"), "explicitStops outline must not match: {nyland}");
         let _ = std::fs::remove_file(&output);
     }
 
@@ -1694,7 +1583,7 @@ mod tests {
         let config = test_config();
         let input = test_data_path("stopPlaces.xml");
         let output = std::env::temp_dir().join("test_convert_transport_mode.ndjson");
-        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &SkipSet::default()).unwrap();
+        convert_all(&config, &input, &output, false, &UsageBoost::empty(), &SkipSet::default()).unwrap();
         let content = std::fs::read_to_string(&output).unwrap();
         assert!(content.contains("\"transport_mode\":\"bus:localBus\""));
         let _ = std::fs::remove_file(&output);
@@ -1705,7 +1594,7 @@ mod tests {
         let config = test_config();
         let input = test_data_path("stopPlaces.xml");
         let output = std::env::temp_dir().join("test_convert_gid.ndjson");
-        convert_all(&config, &input, &output, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &SkipSet::default()).unwrap();
+        convert_all(&config, &input, &output, false, &UsageBoost::empty(), &SkipSet::default()).unwrap();
         let content = std::fs::read_to_string(&output).unwrap();
         assert!(content.contains("county_gid.KVE"));
         assert!(content.contains("locality_gid.KVE"));
@@ -1718,7 +1607,7 @@ mod tests {
         let input = test_data_path("stopPlaces.xml");
 
         let baseline_out = std::env::temp_dir().join("test_usage_baseline.ndjson");
-        convert_all(&config, &input, &baseline_out, false, Some(&test_data_path("fareZones.xml")), &UsageBoost::empty(), &SkipSet::default()).unwrap();
+        convert_all(&config, &input, &baseline_out, false, &UsageBoost::empty(), &SkipSet::default()).unwrap();
         let baseline = std::fs::read_to_string(&baseline_out).unwrap();
         let _ = std::fs::remove_file(&baseline_out);
 
@@ -1726,7 +1615,7 @@ mod tests {
         std::fs::write(&csv, "id;name;usage\nNSR:StopPlace:56697;Oslo S;5000000\n").unwrap();
         let usage = UsageBoost::load(Some(&csv), crate::common::usage::DEFAULT_ALPHA, crate::common::usage::DEFAULT_USAGE_FLOOR).unwrap();
         let boosted_out = std::env::temp_dir().join("test_usage_boosted.ndjson");
-        convert_all(&config, &input, &boosted_out, false, Some(&test_data_path("fareZones.xml")), &usage, &SkipSet::default()).unwrap();
+        convert_all(&config, &input, &boosted_out, false, &usage, &SkipSet::default()).unwrap();
         let boosted = std::fs::read_to_string(&boosted_out).unwrap();
         let _ = std::fs::remove_file(&boosted_out);
         let _ = std::fs::remove_file(&csv);

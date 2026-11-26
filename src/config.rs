@@ -185,10 +185,6 @@ pub struct StopPlaceConfig {
     /// only this converter consumes them, so their config lives here. Defaults when omitted.
     #[serde(default)]
     pub group_of_stop_places: GroupOfStopPlacesConfig,
-    /// Omit and the run warns and falls back to NSR's mirrored refs, which reproduce the
-    /// export's zone IDs and authorities but are due to disappear from the NSR export.
-    #[serde(default)]
-    pub fare_zones: Option<FareZonesConfig>,
     /// Cross-register duplicates; see `source::stopplace::dedupe`.
     #[serde(default)]
     pub dedupe: Option<DedupeConfig>,
@@ -206,15 +202,6 @@ pub struct StopPlaceConfig {
 #[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct DedupeConfig {
-    pub input: SourceInput,
-}
-
-/// The fare zone NeTEx export (`https://api.entur.io/distance/netex/fare-zones`), the
-/// authoritative source of fare zones. Optional: without it a run falls back to NSR's mirrored
-/// refs (see `ZoneSource`), which match today but are being retired.
-#[derive(Deserialize, Clone)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct FareZonesConfig {
     pub input: SourceInput,
 }
 
@@ -300,8 +287,7 @@ mod tests {
             "rankAddress": 30,
             "stopTypeFactors": { "busStation": 2.0 },
             "interchangeFactors": { "preferredInterchange": 10.0 },
-            "groupOfStopPlaces": { "rankAddress": 30 },
-            "fareZones": { "input": { "url": "https://api.entur.io/distance/netex/fare-zones" } }
+            "groupOfStopPlaces": { "rankAddress": 30 }
         }
     }"#;
 
@@ -324,15 +310,6 @@ mod tests {
         assert_eq!(sp.default_value, 50);
         assert_eq!(*sp.stop_type_factors.get("busStation").unwrap(), 2.0);
         assert_eq!(*sp.interchange_factors.get("preferredInterchange").unwrap(), 10.0);
-    }
-
-    #[test]
-    fn test_config_fare_zones_optional() {
-        let sp: StopPlaceConfig = serde_json::from_str(
-            r#"{ "input": { "file": "x.zip" }, "defaultValue": 50, "rankAddress": 30,
-                 "stopTypeFactors": {}, "interchangeFactors": {} }"#,
-        ).unwrap();
-        assert!(sp.fare_zones.is_none());
     }
 
     #[test]

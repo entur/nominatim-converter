@@ -82,7 +82,6 @@
   },
   "stopPlace": {
     "input": { "url": "https://storage.googleapis.com/marduk-production/tiamat/Current_latest.zip" },
-    "fareZones": { "input": { "url": "https://api.entur.io/distance/netex/fare-zones" } },
     "defaultValue": 50,
     "rankAddress": 30,
     "stopTypeFactors": {

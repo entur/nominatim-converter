@@ -111,8 +111,7 @@ pub(crate) struct TariffZoneRefXml {
     pub ref_: Option<String>,
 }
 
-/// A `<FareZone>` in the input's own `<FareFrame>`. Only the authority is read; the zone's
-/// geometry and members are the fare zone export's job.
+/// A `<FareZone>` in the input's own `<FareFrame>`. Only the authority is read.
 #[derive(Debug, Deserialize)]
 pub(crate) struct FareZoneXml {
     #[serde(rename = "@id")]
@@ -166,8 +165,7 @@ pub(crate) struct ParseResult {
     pub stop_places: Vec<StopPlaceXml>,
     pub groups: Vec<GroupOfStopPlacesXml>,
     pub topo_places: HashMap<String, TopographicPlaceXml>,
-    /// Fare zone ID -> AuthorityRef, from the input's `<FareFrame>`. Only read when no fare
-    /// zone export is configured; see `ZoneSource` in `convert.rs`.
+    /// Fare zone ID -> AuthorityRef, from the input's `<FareFrame>`.
     pub fare_zone_authorities: HashMap<String, String>,
 }
 
