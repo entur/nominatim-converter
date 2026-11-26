@@ -371,10 +371,7 @@ pub(crate) mod tests {
 
     #[test]
     fn test_parse_gpkg_point_geometry_le_no_envelope() {
-        let mut blob = Vec::new();
-        blob.push(0x47); blob.push(0x50);
-        blob.push(0x00); // version
-        blob.push(0x00); // flags: no envelope
+        let mut blob = vec![0x47, 0x50, 0x00 /* version */, 0x00 /* flags: no envelope */];
         blob.extend_from_slice(&3006_i32.to_le_bytes());
         blob.push(0x01); // WKB: LE
         blob.extend_from_slice(&1_u32.to_le_bytes()); // type = Point
@@ -390,10 +387,7 @@ pub(crate) mod tests {
 
     #[test]
     fn test_parse_gpkg_point_geometry_with_envelope() {
-        let mut blob = Vec::new();
-        blob.push(0x47); blob.push(0x50);
-        blob.push(0x00); // version
-        blob.push(0x03); // flags: envelope_type=1, byte_order=1
+        let mut blob = vec![0x47, 0x50, 0x00 /* version */, 0x03 /* flags: envelope_type=1, byte_order=1 */];
         blob.extend_from_slice(&3006_i32.to_le_bytes());
         for _ in 0..4 { blob.extend_from_slice(&0.0_f64.to_le_bytes()); }
         blob.push(0x01); // WKB: LE
@@ -410,10 +404,7 @@ pub(crate) mod tests {
 
     #[test]
     fn test_parse_gpkg_point_geometry_big_endian() {
-        let mut blob = Vec::new();
-        blob.push(0x47); blob.push(0x50);
-        blob.push(0x00); // version
-        blob.push(0x00); // flags: no envelope
+        let mut blob = vec![0x47, 0x50, 0x00 /* version */, 0x00 /* flags: no envelope */];
         blob.extend_from_slice(&3006_i32.to_le_bytes()); // SRS ID in header is always based on flags byte order
         blob.push(0x00); // WKB: big-endian
         blob.extend_from_slice(&1_u32.to_be_bytes()); // type = Point (BE)
@@ -429,10 +420,7 @@ pub(crate) mod tests {
 
     #[test]
     fn test_parse_gpkg_rejects_non_point_geometry() {
-        let mut blob = Vec::new();
-        blob.push(0x47); blob.push(0x50);
-        blob.push(0x00);
-        blob.push(0x00);
+        let mut blob = vec![0x47, 0x50, 0x00, 0x00];
         blob.extend_from_slice(&3006_i32.to_le_bytes());
         blob.push(0x01); // WKB: LE
         blob.extend_from_slice(&2_u32.to_le_bytes()); // type = LineString (not Point)
